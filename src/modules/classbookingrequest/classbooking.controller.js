@@ -1316,7 +1316,28 @@ export const createUnifiedBooking = async (req, res) => {
     }
 
     /* =========================
-       5️⃣ CREATE BOOKING
+       5️⃣ SET INITIAL STATUS
+    ========================= */
+    // Always set initial status to "Booked" for new bookings
+    // The cron job will automatically update status based on time:
+    // - Booked -> Active (when startTime reached)
+    // - Active -> Completed (when endTime passed)
+    // - Booked -> Completed (if missed)
+    const initialStatus = "Booked"; // Always "Booked" for new bookings
+    
+    console.log(`✅ New Booking Created with Status:`, {
+      date,
+      startTime,
+      endTime,
+      bookingType,
+      memberId,
+      trainerId,
+      initialStatus: initialStatus,
+      note: "Status will be updated by cron job based on time"
+    });
+
+    /* =========================
+       6️⃣ CREATE BOOKING
     ========================= */
     await pool.query(
       `
@@ -1336,7 +1357,7 @@ export const createUnifiedBooking = async (req, res) => {
         startTime,
         endTime,
         bookingType,
-        bookingStatus,
+        initialStatus, // Use calculated status
         paymentStatus,
         price,
         notes || "",
@@ -1415,9 +1436,36 @@ export const createUnifiedBooking = async (req, res) => {
       }
     }
 
+    // Get the created booking to return with correct status
+    const [createdBooking] = await pool.query(`
+      SELECT id, bookingStatus, date, startTime, endTime
+      FROM unified_bookings
+      WHERE memberId = ? 
+        AND date = ?
+        AND startTime = ?
+        AND endTime = ?
+        AND bookingType = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `, [memberId, date, startTime, endTime, bookingType]);
+
+    console.log(`✅ Booking Created Successfully:`, {
+      bookingId: createdBooking[0]?.id,
+      status: createdBooking[0]?.bookingStatus,
+      date: createdBooking[0]?.date,
+      time: `${createdBooking[0]?.startTime} - ${createdBooking[0]?.endTime}`
+    });
+
     res.json({
       success: true,
-      message: "Booking created successfully"
+      message: "Booking created successfully",
+      data: {
+        bookingId: createdBooking[0]?.id,
+        bookingStatus: createdBooking[0]?.bookingStatus || initialStatus,
+        date: createdBooking[0]?.date,
+        startTime: createdBooking[0]?.startTime,
+        endTime: createdBooking[0]?.endTime
+      }
     });
 
   } catch (err) {
@@ -1576,15 +1624,35 @@ export const getUnifiedBookingsByTrainer = async (req, res) => {
     const [rows] = await pool.query(
       `
       SELECT 
-        b.*,
+        b.id,
+        b.memberId,
+        b.trainerId,
+        b.sessionId,
+        b.classId,
+        DATE_FORMAT(b.date, '%Y-%m-%d') AS date,
+        DATE_FORMAT(b.endDate, '%Y-%m-%d') AS endDate,
+        b.startTime,
+        b.endTime,
+        b.bookingType,
+        b.bookingStatus,
+        b.paymentStatus,
+        b.price,
+        b.notes,
+        b.branchId,
         m.fullName AS memberName,
-        s.sessionName
+        um.fullName AS trainerName,
+        s.sessionName,
+        c.className,
+        -- Check if booking was created by receptionist (no sessionId means direct booking)
+        CASE WHEN b.sessionId IS NULL THEN 1 ELSE 0 END AS isReceptionistBooking
       FROM unified_bookings b
       LEFT JOIN member m ON m.id = b.memberId
       LEFT JOIN user um ON um.id = m.userId
+      LEFT JOIN user ut ON ut.id = b.trainerId
       LEFT JOIN session s ON s.id = b.sessionId
+      LEFT JOIN classschedule c ON c.id = b.classId
       WHERE b.trainerId = ? AND b.bookingType = 'PT'
-      ORDER BY b.date DESC
+      ORDER BY b.date DESC, b.startTime DESC
       `,
       [trainerId]
     );
@@ -1592,7 +1660,7 @@ export const getUnifiedBookingsByTrainer = async (req, res) => {
     res.json({ success: true, bookings: rows });
 
   } catch (err) {
-    console.error("ERROR →", err);
+    console.error("getUnifiedBookingsByTrainer ERROR →", err);
     res.status(500).json({ success: false, message: err.message });
   }
 };

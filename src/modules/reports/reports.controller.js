@@ -17,6 +17,7 @@ import {
 export const generateSalesReportController = async (req, res) => {
   try {
     const { adminId } = req.query;
+    const { fromDate, toDate } = req.query;
 
     if (!adminId) {
       return res.status(400).json({
@@ -25,7 +26,9 @@ export const generateSalesReportController = async (req, res) => {
       });
     }
 
-    const reportData = await generateSalesReportService(adminId);
+    const reportData = await generateSalesReportService(adminId,
+      fromDate,
+      toDate);
 
     res.status(200).json({
       success: true,
@@ -73,7 +76,7 @@ export const generateMemberReportController = async (req, res) => {
 
 export const generatePersonalTrainerReportController = async (req, res) => {
   try {
-    const { adminId, trainerId } = req.query;
+    const {adminId, trainerId, fromDate, toDate } = req.query;
 
     if (!adminId) {
       return res.status(400).json({
@@ -83,8 +86,10 @@ export const generatePersonalTrainerReportController = async (req, res) => {
     }
 
     const reportData = await generatePersonalTrainerReportService(
-      adminId, 
-      trainerId ? parseInt(trainerId) : null
+      adminId,
+      trainerId ? parseInt(trainerId) : null,
+      fromDate,
+      toDate
     );
 
     res.status(200).json({
@@ -135,8 +140,12 @@ export const generateGeneralTrainerReportController = async (req, res) => {
 export const getReceptionReportForAdmin = async (req, res) => {
   try {
     const { adminId } = req.params;
+    const { fromDate, toDate } = req.query;
 
-    const report = await getReceptionReportService(adminId);
+
+    const report = await getReceptionReportService( adminId,
+      fromDate,
+      toDate);
 
     if (report.error) {
       return res.status(404).json({ success: false, message: report.error });

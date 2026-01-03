@@ -205,3 +205,85 @@ export const startPTAutoCompleteCron = () => {
     }
   });
 };
+
+// Auto-complete unified bookings when endTime passes
+export const startUnifiedBookingAutoCompleteCron = () => {
+  cron.schedule("*/1 * * * *", async () => {
+    let lockAcquired = false;
+
+    try {
+      const [[lock]] = await pool.query(
+        `SELECT GET_LOCK('unified_booking_auto_complete_cron', 0) AS acquired`
+      );
+
+      if (!lock.acquired) {
+        console.log("⏭️ Unified booking auto-complete cron skipped (lock held)");
+        return;
+      }
+
+      lockAcquired = true;
+
+      const istTime = new Date().toLocaleString("en-IN", {
+        timeZone: "Asia/Kolkata",
+      });
+
+      console.log(`⏳ Unified booking auto-complete cron started | IST: ${istTime}`);
+
+      // Get current IST time for comparison
+      const currentIST = `CONVERT_TZ(NOW(), '+00:00', '+05:30')`;
+
+      /* =====================================
+         1️⃣ BOOKED → ACTIVE
+         When current time >= startTime on date
+      ===================================== */
+      const [activeResult] = await pool.query(`
+        UPDATE unified_bookings
+        SET bookingStatus = 'Active'
+        WHERE bookingStatus = 'Booked'
+          AND ${currentIST} >= TIMESTAMP(date, startTime)
+          AND ${currentIST} < TIMESTAMP(date, endTime)
+      `);
+
+      if (activeResult.affectedRows > 0) {
+        console.log(`🔄 Unified bookings activated: ${activeResult.affectedRows} | IST: ${istTime}`);
+      }
+
+      /* =====================================
+         2️⃣ ACTIVE → COMPLETED
+         When current time > endTime on date
+      ===================================== */
+      const [completeResult] = await pool.query(`
+        UPDATE unified_bookings
+        SET bookingStatus = 'Completed'
+        WHERE bookingStatus = 'Active'
+          AND ${currentIST} > TIMESTAMP(date, endTime)
+      `);
+
+      if (completeResult.affectedRows > 0) {
+        console.log(`🏁 Unified bookings completed (from Active): ${completeResult.affectedRows} | IST: ${istTime}`);
+      }
+
+      /* =====================================
+         3️⃣ BOOKED → COMPLETED (MISSED)
+         When booking time already passed (missed bookings)
+      ===================================== */
+      const [missedResult] = await pool.query(`
+        UPDATE unified_bookings
+        SET bookingStatus = 'Completed'
+        WHERE bookingStatus = 'Booked'
+          AND ${currentIST} > TIMESTAMP(date, endTime)
+      `);
+
+      if (missedResult.affectedRows > 0) {
+        console.log(`⚠️ Missed unified bookings auto-completed: ${missedResult.affectedRows} | IST: ${istTime}`);
+      }
+
+    } catch (err) {
+      console.error("❌ Unified booking auto-complete cron failed", err);
+    } finally {
+      if (lockAcquired) {
+        await pool.query(`SELECT RELEASE_LOCK('unified_booking_auto_complete_cron')`);
+      }
+    }
+  });
+};

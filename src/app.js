@@ -21,7 +21,7 @@ import { ENV } from "./config/env.js";
 import router from "./routes/index.js";
 import { errorHandler } from "./middlewares/errorHandler.js";
 import fileUpload from "express-fileupload";
-import { startMemberExpiryCron, startPTAutoCompleteCron } from "./config/startMemberExpiry.js";
+import { startMemberExpiryCron, startPTAutoCompleteCron, startUnifiedBookingAutoCompleteCron } from "./config/startMemberExpiry.js";
 
 
 const app = express();
@@ -69,5 +69,6 @@ app.get("/", (req, res) => {
 app.use(errorHandler);
 startMemberExpiryCron()
 startPTAutoCompleteCron()
+startUnifiedBookingAutoCompleteCron()
 
 export default app;

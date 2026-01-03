@@ -1,9 +1,39 @@
 import { pool } from "../../config/db.js";
 
 // Generate Sales Report Service (Total Sales - Plans bought/assigned)
-export const generateSalesReportService = async (adminId) => {
+export const generateSalesReportService = async (  adminId,
+  fromDate,
+  toDate) => {
+
+
+const buildDateFilter = (column, adminId, fromDate, toDate) => {
+  let condition = "";
+  let values = [adminId];
+
+  if (fromDate && toDate) {
+    condition = `AND DATE(${column}) BETWEEN ? AND ?`;
+    values.push(fromDate, toDate);
+  } else if (fromDate) {
+    condition = `AND DATE(${column}) >= ?`;
+    values.push(fromDate);
+  } else if (toDate) {
+    condition = `AND DATE(${column}) <= ?`;
+    values.push(toDate);
+  }
+
+  return { condition, values };
+};
+
+
   try {
     // 1️⃣ Total Sales: Count of all plans bought/assigned
+
+    const { condition, values } = buildDateFilter(
+  "mpa.assignedAt",
+  adminId,
+  fromDate,
+  toDate
+);
     const [[totalSalesStats]] = await pool.query(
       `SELECT 
         COUNT(*) AS totalSales,
@@ -18,8 +48,10 @@ export const generateSalesReportService = async (adminId) => {
         END) AS cancelled
       FROM member_plan_assignment mpa
       INNER JOIN member m ON mpa.memberId = m.id
-      WHERE m.adminId = ?`,
-      [adminId]
+      WHERE m.adminId = ?
+      ${condition}`,
+      
+      values
     );
 
     // 2️⃣ Booked: Count of bookings from dynamic page (unified_bookings where bookingType = 'GROUP')
@@ -27,8 +59,9 @@ export const generateSalesReportService = async (adminId) => {
       `SELECT COUNT(*) AS booked
       FROM unified_bookings ub
       INNER JOIN member m ON ub.memberId = m.id
-      WHERE m.adminId = ? AND ub.bookingType = 'GROUP'`,
-      [adminId]
+      WHERE m.adminId = ? AND ub.bookingType = 'GROUP'
+      ${condition.replace("mpa.assignedAt", "ub.createdAt")}`,
+      values
     );
 
     // 3️⃣ Bookings by Day: Plan assignments per day
@@ -39,9 +72,10 @@ export const generateSalesReportService = async (adminId) => {
       FROM member_plan_assignment mpa
       INNER JOIN member m ON mpa.memberId = m.id
       WHERE m.adminId = ?
+      ${condition}
       GROUP BY DATE(mpa.assignedAt)
       ORDER BY date ASC`,
-      [adminId]
+      values
     );
 
     // 4️⃣ Booking Status: Active and Inactive/Expired plans
@@ -56,13 +90,15 @@ export const generateSalesReportService = async (adminId) => {
       FROM member_plan_assignment mpa
       INNER JOIN member m ON mpa.memberId = m.id
       WHERE m.adminId = ?
+      ${condition}
+
       GROUP BY 
         CASE
           WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
           WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
           ELSE 'Inactive'
         END`,
-      [adminId]
+      values
     );
 
     // 5️⃣ Last Transactions: All plan purchases/assignments with trainer name and booking details
@@ -146,9 +182,10 @@ export const generateSalesReportService = async (adminId) => {
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
+      ${condition}
       ORDER BY mpa.assignedAt DESC
       LIMIT 100`,
-      [adminId]
+      values
     );
 
     // Format the data for the UI
@@ -158,9 +195,11 @@ export const generateSalesReportService = async (adminId) => {
       confirmed: totalSalesStats.confirmed || 0,
       cancelled: totalSalesStats.cancelled || 0,
       booked: bookedStats.booked || 0,
-      avgTicket: totalSalesStats.totalSales > 0 
-        ? parseFloat(totalSalesStats.totalRevenue) / totalSalesStats.totalSales 
-        : 0,
+      avgTicket:
+        totalSalesStats.totalSales > 0
+          ? parseFloat(totalSalesStats.totalRevenue) /
+            totalSalesStats.totalSales
+          : 0,
     };
 
     // Format transactions data
@@ -176,26 +215,31 @@ export const generateSalesReportService = async (adminId) => {
           formattedTime = timeStr;
         }
       }
-      
+
       // Ensure proper type conversion and handle null/undefined values
-      const planPrice = transaction.price !== null && transaction.price !== undefined 
-        ? parseFloat(transaction.price) 
-        : 0;
-      const totalClasses = transaction.totalClasses !== null && transaction.totalClasses !== undefined
-        ? parseInt(transaction.totalClasses)
-        : (transaction.sessions !== null && transaction.sessions !== undefined 
-            ? parseInt(transaction.sessions) 
-            : 0);
+      const planPrice =
+        transaction.price !== null && transaction.price !== undefined
+          ? parseFloat(transaction.price)
+          : 0;
+      const totalClasses =
+        transaction.totalClasses !== null &&
+        transaction.totalClasses !== undefined
+          ? parseInt(transaction.totalClasses)
+          : transaction.sessions !== null && transaction.sessions !== undefined
+          ? parseInt(transaction.sessions)
+          : 0;
       // Handle paymentMode - check if it's a valid string
       let paymentMode = "N/A";
-      if (transaction.paymentMode && 
-          transaction.paymentMode !== 'N/A' && 
-          transaction.paymentMode !== null && 
-          transaction.paymentMode !== undefined &&
-          String(transaction.paymentMode).trim() !== '') {
+      if (
+        transaction.paymentMode &&
+        transaction.paymentMode !== "N/A" &&
+        transaction.paymentMode !== null &&
+        transaction.paymentMode !== undefined &&
+        String(transaction.paymentMode).trim() !== ""
+      ) {
         paymentMode = String(transaction.paymentMode).trim();
       }
-      
+
       return {
         date: transaction.date,
         memberId: transaction.memberId,
@@ -349,109 +393,192 @@ export const generateMemberReportService = async (adminId) => {
 
 export const generateGeneralTrainerReportService = async (adminId) => {
   try {
-    // 2️⃣ Get member userIds related to this admin
-    const [members] = await pool.query(
-      `SELECT userId FROM member WHERE adminId = ?`,
-      [adminId]
-    );
-
-    if (members.length === 0) {
-      return {
-        stats: {
-          totalBookings: 0,
-          completed: 0,
-          cancelled: 0,
-          booked: 0,
-        },
-        bookingsByDay: [],
-        bookingStatus: [],
-        transactions: [],
-      };
-    }
-
-    // Extract user IDs of members
-    const memberIds = members.map((m) => m.userId); // Using userId from the member table
-
-    const memberPlaceholders = memberIds.map(() => "?").join(",");
-
-    // 3️⃣ Get booking statistics for GROUP bookings for these members
-    const [bookingStats] = await pool.query(
+    // 1️⃣ Total Bookings: Count of General Trainer plans assigned
+    // General Trainer plans: type = 'GROUP' OR (type = 'MEMBER' AND trainerType = 'general')
+    const [[planStats]] = await pool.query(
       `SELECT 
-    COUNT(*) AS totalBookings,
-    0 AS totalRevenue,
-    0 AS avgTicket,
-    SUM(CASE WHEN bookingStatus = 'Completed' THEN 1 ELSE 0 END) AS completed,
-    SUM(CASE WHEN bookingStatus = 'Cancelled' THEN 1 ELSE 0 END) AS cancelled,
-    SUM(CASE WHEN bookingStatus = 'Booked' THEN 1 ELSE 0 END) AS booked
-  FROM unified_bookings ub
-  LEFT JOIN member m ON ub.memberId = m.id  -- This join ensures we link the correct member.id from unified_bookings
-  WHERE m.adminId = ?  -- Filtering by adminId to ensure we're only pulling bookings for this admin
-    AND ub.bookingType = 'GROUP'`, // Only group bookings
+        COUNT(*) AS totalBookings,
+        COALESCE(SUM(mpa.amountPaid), 0) AS totalRevenue,
+        SUM(CASE 
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 1 
+          ELSE 0 
+        END) AS confirmed,
+        SUM(CASE 
+          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 1 
+          ELSE 0 
+        END) AS cancelled
+      FROM member_plan_assignment mpa
+      INNER JOIN member m ON mpa.memberId = m.id
+      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      WHERE m.adminId = ?
+        AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))`,
       [adminId]
     );
 
-    // 4️⃣ Bookings by day
+    // 2️⃣ Booked: Count of bookings from dynamic page (unified_bookings where bookingType = 'GROUP')
+    const [[bookedStats]] = await pool.query(
+      `SELECT COUNT(*) AS booked
+      FROM unified_bookings ub
+      INNER JOIN member m ON ub.memberId = m.id
+      WHERE m.adminId = ? 
+        AND ub.bookingType = 'GROUP'`,
+      [adminId]
+    );
+
+    // 3️⃣ Bookings by Day: General Trainer plan assignments per day (with revenue)
     const [bookingsByDay] = await pool.query(
       `SELECT 
-    DATE(ub.createdAt) AS date,
-    COUNT(*) AS count
-  FROM unified_bookings ub
-  LEFT JOIN member m ON ub.memberId = m.id  -- Ensuring the correct join for memberId
-  WHERE m.adminId = ? 
-    AND ub.bookingType = 'GROUP'  -- Only group bookings
-  GROUP BY DATE(ub.createdAt)
-  ORDER BY date ASC`,
+        DATE(mpa.assignedAt) AS date,
+        COUNT(*) AS count,
+        COALESCE(SUM(mpa.amountPaid), 0) AS revenue
+      FROM member_plan_assignment mpa
+      INNER JOIN member m ON mpa.memberId = m.id
+      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      WHERE m.adminId = ?
+        AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))
+      GROUP BY DATE(mpa.assignedAt)
+      ORDER BY date ASC`,
       [adminId]
     );
 
-    // 5️⃣ Booking status distribution
+    // 4️⃣ Booking Status: Active and Inactive General Trainer plans
     const [bookingStatus] = await pool.query(
       `SELECT 
-    ub.bookingStatus,
-    COUNT(*) AS count
-  FROM unified_bookings ub
-  LEFT JOIN member m ON ub.memberId = m.id  -- Correctly joining with member.id
-  WHERE m.adminId = ?
-    AND ub.bookingType = 'GROUP'  -- Only group bookings
-  GROUP BY ub.bookingStatus`,
+        CASE
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
+          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
+          ELSE 'Inactive'
+        END AS bookingStatus,
+        COUNT(*) AS count
+      FROM member_plan_assignment mpa
+      INNER JOIN member m ON mpa.memberId = m.id
+      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      WHERE m.adminId = ?
+        AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))
+      GROUP BY 
+        CASE
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
+          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
+          ELSE 'Inactive'
+        END`,
       [adminId]
     );
 
-    // 6️⃣ Transactions list for UI
+    // 5️⃣ Transactions list for UI
     const [transactions] = await pool.query(
       `SELECT 
-    ub.date,
-    IFNULL(trainerUser.fullName, 'N/A') AS trainerName,
-    IFNULL(memberUser.fullName, 'N/A') AS memberName,
-    'Group Training' AS type,
-    ub.startTime AS time,
-    IFNULL(ub.bookingStatus, 'N/A') AS status
-  FROM unified_bookings ub
-  LEFT JOIN user AS trainerUser ON ub.trainerId = trainerUser.id
-  LEFT JOIN member AS m ON ub.memberId = m.id  -- Linking unified_bookings with member using member.id
-  LEFT JOIN user AS memberUser ON m.userId = memberUser.id  -- Linking member to user via userId
-  WHERE m.adminId = ?
-    AND ub.bookingType = 'GROUP'  -- Only group bookings
-  ORDER BY ub.date DESC`,
+        DATE(mpa.assignedAt) AS date,
+        m.id AS memberId,
+        m.fullName AS username,
+        mp.id AS planId,
+        mp.name AS planName,
+        mp.sessions AS totalClasses,
+        mpa.amountPaid AS price,
+        mpa.paymentMode,
+        mpa.status AS originalStatus,
+        mpa.membershipTo,
+        CASE
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
+          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
+          ELSE 'Inactive'
+        END AS computedStatus,
+        COALESCE(
+          (SELECT u.fullName FROM user u WHERE u.id = mpa.assignedBy),
+          'System'
+        ) AS assignedBy,
+        COALESCE(
+          (SELECT u.fullName FROM user u 
+           INNER JOIN staff s ON s.userId = u.id 
+           WHERE s.id = mp.trainerId),
+          'N/A'
+        ) AS trainerName,
+        mp.trainerId,
+        TIME(mpa.assignedAt) AS time,
+        -- Booking statistics for General Trainer plans
+        -- Note: unified_bookings doesn't have planId, so we count all GROUP bookings for the member
+        COALESCE((
+          SELECT COUNT(*) 
+          FROM unified_bookings ub 
+          WHERE ub.memberId = m.id 
+            AND ub.bookingType = 'GROUP'
+        ), 0) AS classesBooked,
+        COALESCE((
+          SELECT COUNT(*) 
+          FROM unified_bookings ub 
+          WHERE ub.memberId = m.id 
+            AND ub.bookingStatus = 'Confirmed'
+            AND ub.bookingType = 'GROUP'
+        ), 0) AS classesConfirmed,
+        COALESCE((
+          SELECT COUNT(*) 
+          FROM unified_bookings ub 
+          WHERE ub.memberId = m.id 
+            AND ub.bookingStatus = 'Cancelled'
+            AND ub.bookingType = 'GROUP'
+        ), 0) AS classesCancelled,
+        COALESCE((
+          SELECT COUNT(*) 
+          FROM unified_bookings ub 
+          WHERE ub.memberId = m.id 
+            AND ub.bookingStatus = 'Completed'
+            AND ub.bookingType = 'GROUP'
+        ), 0) AS classesCompleted
+      FROM member_plan_assignment mpa
+      INNER JOIN member m ON mpa.memberId = m.id
+      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      WHERE m.adminId = ?
+        AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))
+      ORDER BY mpa.assignedAt DESC
+      LIMIT 100`,
       [adminId]
     );
-    // Format summary stats
+
+    // Format output for UI
     const formattedStats = {
-      totalBookings: bookingStats[0].totalBookings || 0,
-      completed: bookingStats[0].completed || 0,
-      cancelled: bookingStats[0].cancelled || 0,
-      booked: bookingStats[0].booked || 0,
+      totalBookings: planStats.totalBookings || 0,
+      totalRevenue: parseFloat(planStats.totalRevenue) || 0,
+      confirmed: planStats.confirmed || 0,
+      cancelled: planStats.cancelled || 0,
+      booked: bookedStats.booked || 0,
+      avgTicket:
+        planStats.totalBookings > 0
+          ? parseFloat(planStats.totalRevenue) / planStats.totalBookings
+          : 0,
     };
 
-    // Format transaction list
-    const formattedTransactions = transactions.map((tx) => ({
-      date: tx.date,
-      trainer: tx.trainerName || "N/A",
-      username: tx.memberName || "N/A",
-      type: tx.type,
-      time: tx.time,
-      status: tx.status,
-    }));
+    // Format transactions data
+    const formattedTransactions = transactions.map((transaction) => {
+      // Format time to HH:MM if it exists
+      let formattedTime = "-";
+      if (transaction.time) {
+        const timeStr = String(transaction.time);
+        if (timeStr.includes(":")) {
+          formattedTime = timeStr.substring(0, 5);
+        } else {
+          formattedTime = timeStr;
+        }
+      }
+
+      return {
+        date: transaction.date,
+        memberId: transaction.memberId,
+        memberName: transaction.username || "N/A",
+        planId: transaction.planId,
+        planName: transaction.planName || "Group Training Plan",
+        trainer: transaction.trainerName || "N/A",
+        trainerId: transaction.trainerId,
+        planPrice: parseFloat(transaction.price) || 0,
+        totalClasses: transaction.totalClasses || 0,
+        classesBooked: transaction.classesBooked || 0,
+        classesConfirmed: transaction.classesConfirmed || 0,
+        classesCancelled: transaction.classesCancelled || 0,
+        classesCompleted: transaction.classesCompleted || 0,
+        paymentMode: transaction.paymentMode || "N/A",
+        time: formattedTime,
+        status: transaction.computedStatus || "Inactive",
+        revenue: parseFloat(transaction.price) || 0,
+      };
+    });
 
     return {
       stats: formattedStats,
@@ -536,7 +663,30 @@ export const generateGeneralTrainerReportService = async (adminId) => {
 //   }
 // };
 
-export const generatePersonalTrainerReportService = async (adminId, trainerId = null) => {
+export const generatePersonalTrainerReportService = async (
+   adminId,
+  trainerId = null,
+  fromDate,
+  toDate
+) => {
+  const buildDateFilter = (column, fromDate, toDate) => {
+  let condition = "";
+  let values = [];
+
+  if (fromDate && toDate) {
+    condition = `AND DATE(${column}) BETWEEN ? AND ?`;
+    values.push(fromDate, toDate);
+  } else if (fromDate) {
+    condition = `AND DATE(${column}) >= ?`;
+    values.push(fromDate);
+  } else if (toDate) {
+    condition = `AND DATE(${column}) <= ?`;
+    values.push(toDate);
+  }
+
+  return { condition, values };
+};
+
   try {
     // Build WHERE clause for trainer filter
     let trainerFilter = "";
@@ -548,6 +698,19 @@ export const generatePersonalTrainerReportService = async (adminId, trainerId = 
 
     // 1️⃣ Total Bookings: Count of Personal Trainer plans assigned
     // Personal Trainer plans: type = 'PERSONAL' OR (type = 'MEMBER' AND trainerType = 'personal')
+
+    const planDateFilter = buildDateFilter(
+  "mpa.assignedAt",
+  fromDate,
+  toDate
+);
+
+const bookingDateFilter = buildDateFilter(
+  "ub.createdAt",
+  fromDate,
+  toDate
+);
+
     const [[planStats]] = await pool.query(
       `SELECT 
         COUNT(*) AS totalBookings,
@@ -564,9 +727,15 @@ export const generatePersonalTrainerReportService = async (adminId, trainerId = 
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
+        ${planDateFilter.condition}
+       
         AND (mp.type = 'PERSONAL' OR (mp.type = 'MEMBER' AND mp.trainerType = 'personal'))
         ${trainerFilter}`,
-      [adminId, ...trainerParams]
+      [
+    adminId,
+    ...trainerParams,
+    ...planDateFilter.values
+  ]
     );
 
     // 2️⃣ Booked: Count of bookings from dynamic page (unified_bookings where bookingType = 'PT')
@@ -575,9 +744,18 @@ export const generatePersonalTrainerReportService = async (adminId, trainerId = 
       FROM unified_bookings ub
       INNER JOIN member m ON ub.memberId = m.id
       WHERE m.adminId = ? 
+        ${bookingDateFilter.condition}
         AND ub.bookingType = 'PT'
-        ${trainerId ? "AND ub.trainerId = (SELECT userId FROM staff WHERE id = ?)" : ""}`,
-      trainerId ? [adminId, trainerId] : [adminId]
+        ${
+          trainerId
+            ? "AND ub.trainerId = (SELECT userId FROM staff WHERE id = ?)"
+            : ""
+        
+        }`,
+       trainerId
+    ? [adminId, trainerId, ...bookingDateFilter.values]
+    : [adminId, ...bookingDateFilter.values]
+        
     );
 
     // 3️⃣ Bookings by Day: Personal Trainer plan assignments per day (with revenue)
@@ -590,11 +768,12 @@ export const generatePersonalTrainerReportService = async (adminId, trainerId = 
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
+        ${planDateFilter.condition}
         AND (mp.type = 'PERSONAL' OR (mp.type = 'MEMBER' AND mp.trainerType = 'personal'))
         ${trainerFilter}
       GROUP BY DATE(mpa.assignedAt)
       ORDER BY date ASC`,
-      [adminId, ...trainerParams]
+      [adminId, ...trainerParams, ...planDateFilter.values]
     );
 
     // 4️⃣ Booking Status: Active and Inactive Personal Trainer plans
@@ -610,6 +789,7 @@ export const generatePersonalTrainerReportService = async (adminId, trainerId = 
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
+        ${planDateFilter.condition}
         AND (mp.type = 'PERSONAL' OR (mp.type = 'MEMBER' AND mp.trainerType = 'personal'))
         ${trainerFilter}
       GROUP BY 
@@ -618,7 +798,7 @@ export const generatePersonalTrainerReportService = async (adminId, trainerId = 
           WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
           ELSE 'Inactive'
         END`,
-      [adminId, ...trainerParams]
+      [adminId, ...trainerParams, ...planDateFilter.values]
     );
 
     // 5️⃣ Last Transactions: All Personal Trainer plan purchases/assignments with trainer name
@@ -684,11 +864,12 @@ export const generatePersonalTrainerReportService = async (adminId, trainerId = 
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
+        ${planDateFilter.condition}
         AND (mp.type = 'PERSONAL' OR (mp.type = 'MEMBER' AND mp.trainerType = 'personal'))
         ${trainerFilter}
       ORDER BY mpa.assignedAt DESC
       LIMIT 100`,
-      [adminId, ...trainerParams]
+      [adminId, ...trainerParams, ...planDateFilter.values]
     );
 
     // Format output for UI
@@ -698,9 +879,10 @@ export const generatePersonalTrainerReportService = async (adminId, trainerId = 
       confirmed: planStats.confirmed || 0,
       cancelled: planStats.cancelled || 0,
       booked: bookedStats.booked || 0,
-      avgTicket: planStats.totalBookings > 0 
-        ? parseFloat(planStats.totalRevenue) / planStats.totalBookings 
-        : 0,
+      avgTicket:
+        planStats.totalBookings > 0
+          ? parseFloat(planStats.totalRevenue) / planStats.totalBookings
+          : 0,
     };
 
     // Format transactions data
@@ -715,7 +897,7 @@ export const generatePersonalTrainerReportService = async (adminId, trainerId = 
           formattedTime = timeStr;
         }
       }
-      
+
       return {
         date: transaction.date,
         memberId: transaction.memberId,
@@ -867,153 +1049,301 @@ export const generatePersonalTrainerReportService = async (adminId, trainerId = 
 //   };
 // };
 
-export const getReceptionReportService = async (adminId) => {
-  // 1️⃣ Fetch all branches of this admin
+export const getReceptionReportService = async (adminId,
+  fromDate,
+  toDate
 
-  // ---------------- WEEKLY ATTENDANCE (ALL BRANCHES) ----------------
-  const [members] = await pool.query(
-    `SELECT userId FROM member WHERE adminId = ?`,
-    [adminId]
-  );
+  
+) =>
+   {
+    const buildDateFilter = (column, fromDate, toDate) => {
+  let condition = "";
+  let values = [];
 
-  if (members.length === 0) {
-    return { error: "No members found for this admin" };
+  if (fromDate && toDate) {
+    condition = `AND DATE(${column}) BETWEEN ? AND ?`;
+    values.push(fromDate, toDate);
+  } else if (fromDate) {
+    condition = `AND DATE(${column}) >= ?`;
+    values.push(fromDate);
+  } else if (toDate) {
+    condition = `AND DATE(${column}) <= ?`;
+    values.push(toDate);
   }
 
-  const memberUserIds = members.map((m) => m.userId);
+  return { condition, values };
+};
 
-  const [weekly] = await pool.query(
-    `
-      SELECT 
-          DAYNAME(ma.checkIn) AS day,
-          COUNT(*) AS count,
-          DAYOFWEEK(ma.checkIn) AS sortOrder
-      FROM memberattendance ma
-      WHERE DATE(ma.checkIn) >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-        AND ma.memberId IN (?)
-      GROUP BY day, sortOrder
-      ORDER BY sortOrder
-      `,
-    [memberUserIds]
-  );
+  try {
+    console.log("Reception Report - adminId:", adminId);
 
-  // ---------------- TODAY SUMMARY (ALL BRANCHES) ----------------
+    // ---------------- GET ALL RECEPTIONIST USER IDs UNDER THIS ADMIN ----------------
+    const dateFilter = buildDateFilter(
+  "mpa.assignedAt",
+  fromDate,
+  toDate
+);
+const [receptionistUsers] = await pool.query(
+  `
+  SELECT u.id AS userId, u.fullName, s.id AS staffId
+  FROM staff s
+  JOIN user u ON s.userId = u.id
+  WHERE s.adminId = ? AND u.roleId = 7
+  `,
+  [adminId]
+);
 
-  const [[present]] = await pool.query(
-    `SELECT COUNT(*) AS count 
-       FROM memberattendance ma
-       WHERE DATE(ma.checkIn)=CURDATE() 
-         AND ma.memberId IN (?)`,
-    [memberUserIds]
-  );
 
-  const [[active]] = await pool.query(
-    `SELECT COUNT(*) AS count 
-       FROM memberattendance ma
-       WHERE DATE(ma.checkIn)=CURDATE() 
-         AND ma.checkOut IS NULL
-         AND ma.memberId IN (?)`,
-    [memberUserIds]
-  );
+    if (receptionistUsers.length === 0) {
+      console.log("No receptionists found for admin:", adminId);
+      return {
+        success: true,
+        data: {
+          stats: {
+            totalBookings: 0,
+            totalRevenue: 0,
+            avgTicket: 0,
+            confirmed: 0,
+            cancelled: 0,
+            booked: 0,
+          },
+          bookingsByDay: [],
+          bookingStatus: [],
+          transactions: [],
+        },
+      };
+    }
 
-  const [[completed]] = await pool.query(
-    `SELECT COUNT(*) AS count 
-       FROM memberattendance ma
-       WHERE DATE(ma.checkIn)=CURDATE() 
-         AND ma.checkOut IS NOT NULL
-         AND ma.memberId IN (?)`,
-    [memberUserIds]
-  );
+    const receptionistUserIds = receptionistUsers.map((r) => r.userId);
+    console.log("Receptionist User IDs:", receptionistUserIds);
 
-  // TODAY CHECK-INS COUNT (ALL BRANCHES)
-  const [[todayCheckinsCount]] = await pool.query(
-    `
-      SELECT COUNT(*) AS count
-      FROM memberattendance ma
-      WHERE DATE(ma.checkIn) = CURDATE()
-        AND ma.memberId IN (?)
-      `,
-    [memberUserIds]
-  );
+    // Create placeholders for IN clause
+    const placeholders = receptionistUserIds.map(() => "?").join(",");
 
-  // ---------------- REVENUE ----------------
-  const [[revenue]] = await pool.query(
-    `SELECT SUM(p.amount) AS total
-   FROM payment p
-   JOIN member m ON p.memberId = m.id
-   WHERE m.adminId = ?`,
-    [adminId]
-  );
+    // 1️⃣ Total Bookings: Count of plan assignments made by receptionists
 
-  // ---------------- RECEPTIONIST LIST (ALL BRANCHES) ----------------
-  const [receptionists] = await pool.query(
-    `
-      SELECT s.id, s.userId, s.branchId
-      FROM staff s
-      WHERE s.adminId = ?
-      `,
-    [adminId]
-  );
+    const planDateFilter = buildDateFilter(
+  "mpa.assignedAt",
+  fromDate,
+  toDate
+);
+const [[planStats]] = await pool.query(
+  `
+  SELECT 
+    COUNT(*) AS totalBookings,
+    COALESCE(SUM(mpa.amountPaid), 0) AS totalRevenue,
+    SUM(CASE 
+      WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 1 
+      ELSE 0 
+    END) AS confirmed,
+    SUM(CASE 
+      WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 1 
+      ELSE 0 
+    END) AS cancelled
+  FROM member_plan_assignment mpa
+  INNER JOIN member m ON mpa.memberId = m.id
+  WHERE m.adminId = ?
+  ${planDateFilter.condition}
+    AND (
+      mpa.assignedBy IN (${placeholders})
+      OR mpa.assignedBy = ?
+    )
+  `,
+  [adminId, ...dateFilter.values, ...receptionistUserIds, adminId]
+);
 
-  let receptionistStats = [];
 
-  for (const r of receptionists) {
-    const { userId, branchId } = r;
 
-    // 3️⃣ Fetch receptionist's full name from the 'user' table using userId
-    const [[userDetails]] = await pool.query(
-      `SELECT fullName FROM user WHERE id = ?`,
-      [userId]
-    );
+    console.log("Plan Stats:", planStats);
 
-    // 4️⃣ Fetch stats for each receptionist based on their userId
-    const [[totalCheckins]] = await pool.query(
-      `SELECT COUNT(*) AS count 
-     FROM memberattendance ma
-     WHERE ma.memberId = ?`,
-      [userId]
-    );
+    // 2️⃣ Booked: Count of PT bookings for members whose plans were assigned by receptionists
 
-    const [[activeMembers]] = await pool.query(
-      `SELECT COUNT(*) AS count 
-     FROM memberattendance ma
-     WHERE ma.memberId = ? AND ma.checkOut IS NULL`,
-      [userId]
-    );
+    const bookingDateFilter = buildDateFilter(
+  "ub.createdAt",
+  fromDate,
+  toDate
+);
+const [[bookedStats]] = await pool.query(
+  `
+  SELECT COUNT(*) AS booked
+  FROM unified_bookings ub
+  INNER JOIN member m ON ub.memberId = m.id
+  WHERE m.adminId = ?
+  ${bookingDateFilter.condition}
+    AND ub.bookingType = 'PT'
+    AND EXISTS (
+      SELECT 1
+      FROM member_plan_assignment mpa
+      WHERE mpa.memberId = m.id
+        AND (
+          mpa.assignedBy IN (${placeholders})
+          OR mpa.assignedBy = ?
+        )
+    )
+  `,
+  [adminId, ...dateFilter.values, ...receptionistUserIds, adminId]
+);
 
-    const [[completedMembers]] = await pool.query(
-      `SELECT COUNT(*) AS count 
-     FROM memberattendance ma
-     WHERE ma.memberId = ? AND ma.checkOut IS NOT NULL`,
-      [userId]
-    );
 
-    // Push the receptionist stats with their name
-    receptionistStats.push({
-      receptionistId: r.id,
-      name: userDetails?.fullName || "N/A", // Fetch full name from user table
-      branchId,
-      totalCheckins: totalCheckins.count,
-      activeMembers: activeMembers.count,
-      completedMembers: completedMembers.count,
-      totalRevenue: revenue?.total || 0,
+    console.log("Booked Stats:", bookedStats);
+
+    // 3️⃣ Bookings by Day: Day-by-day revenue from receptionist plan assignments
+const [bookingsByDay] = await pool.query(
+  `
+  SELECT 
+    DATE(mpa.assignedAt) AS date,
+    COUNT(*) AS count,
+    COALESCE(SUM(mpa.amountPaid), 0) AS revenue
+  FROM member_plan_assignment mpa
+  INNER JOIN member m ON mpa.memberId = m.id
+  WHERE m.adminId = ?
+    ${dateFilter.condition}
+    AND (
+      mpa.assignedBy IN (${placeholders})
+      OR mpa.assignedBy = ?
+    )
+  GROUP BY DATE(mpa.assignedAt)
+  ORDER BY date ASC
+  `,
+  [adminId, ...dateFilter.values, ...receptionistUserIds, adminId]
+);
+
+
+
+    console.log("Bookings By Day Count:", bookingsByDay.length);
+
+    // 4️⃣ Booking Status: Active and Inactive members assigned by receptionists
+const [bookingStatus] = await pool.query(
+  `
+  SELECT 
+    CASE
+      WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
+      ELSE 'Inactive'
+    END AS bookingStatus,
+    COUNT(*) AS count
+  FROM member_plan_assignment mpa
+  INNER JOIN member m ON mpa.memberId = m.id
+  WHERE m.adminId = ?
+    ${dateFilter.condition}
+    AND (
+      mpa.assignedBy IN (${placeholders})
+      OR mpa.assignedBy = ?
+    )
+  GROUP BY bookingStatus
+  `,
+  [adminId, ...dateFilter.values, ...receptionistUserIds, adminId]
+);
+
+
+
+    console.log("Booking Status Count:", bookingStatus.length);
+
+    // 5️⃣ Transactions: All members added/assigned by receptionists
+const [transactions] = await pool.query(
+  `
+  SELECT 
+    DATE(mpa.assignedAt) AS date,
+    m.id AS memberId,
+    m.fullName AS username,
+    mp.id AS planId,
+    mp.name AS planName,
+    mpa.amountPaid AS price,
+    mpa.paymentMode,
+    CASE
+      WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
+      ELSE 'Inactive'
+    END AS computedStatus,
+    u.fullName AS assignedBy,
+    TIME(mpa.assignedAt) AS time
+  FROM member_plan_assignment mpa
+  INNER JOIN member m ON mpa.memberId = m.id
+  LEFT JOIN memberplan mp ON mpa.planId = mp.id
+  LEFT JOIN user u ON u.id = mpa.assignedBy
+  WHERE m.adminId = ?
+    ${dateFilter.condition}
+    AND (
+      mpa.assignedBy IN (${placeholders})
+      OR mpa.assignedBy = ?
+    )
+  ORDER BY mpa.assignedAt DESC
+  LIMIT 100
+  `,
+  [adminId, ...dateFilter.values, ...receptionistUserIds, adminId]
+
+);
+
+
+
+    console.log("Transactions Count:", transactions.length);
+
+    // Format output for UI (matching Personal Trainer report structure)
+    const formattedStats = {
+      totalBookings: planStats.totalBookings || 0,
+      totalRevenue: parseFloat(planStats.totalRevenue) || 0,
+      confirmed: planStats.confirmed || 0,
+      cancelled: planStats.cancelled || 0,
+      booked: bookedStats.booked || 0,
+      avgTicket:
+        planStats.totalBookings > 0
+          ? parseFloat(planStats.totalRevenue) / planStats.totalBookings
+          : 0,
+    };
+
+    // Format transactions data (matching Personal Trainer report structure)
+    const formattedTransactions = transactions.map((transaction) => {
+      // Format time to HH:MM if it exists
+      let formattedTime = "-";
+      if (transaction.time) {
+        const timeStr = String(transaction.time);
+        if (timeStr.includes(":")) {
+          formattedTime = timeStr.substring(0, 5);
+        } else {
+          formattedTime = timeStr;
+        }
+      }
+
+      return {
+        date: transaction.date,
+        memberId: transaction.memberId,
+        memberName: transaction.username || "N/A",
+        username: transaction.username || "N/A",
+        planId: transaction.planId,
+        planName: transaction.planName || "Plan Assignment",
+        trainer: transaction.trainerName || transaction.assignedBy || "N/A",
+        trainerName: transaction.trainerName || transaction.assignedBy || "N/A",
+        assignedBy: transaction.assignedBy || "System",
+        trainerId: transaction.trainerId,
+        planPrice: parseFloat(transaction.price) || 0,
+        price: parseFloat(transaction.price) || 0,
+        revenue: parseFloat(transaction.price) || 0,
+        totalClasses: transaction.totalClasses || 0,
+        classesBooked: transaction.classesBooked || 0,
+        classesConfirmed: transaction.classesConfirmed || 0,
+        classesCancelled: transaction.classesCancelled || 0,
+        classesCompleted: transaction.classesCompleted || 0,
+        paymentMode: transaction.paymentMode || "N/A",
+        time: formattedTime,
+        status: transaction.computedStatus || "Inactive",
+        computedStatus: transaction.computedStatus || "Inactive",
+        type: transaction.planName || "Plan Assignment",
+      };
     });
-  }
 
-  return {
-    branches: branchIds,
-    weeklyTrend: weekly,
-    todayCheckinsCount: todayCheckinsCount.count,
-    summary: {
-      present: present.count,
-      active: active.count,
-      completed: completed.count,
-    },
-    revenue: {
-      total: revenue?.total || 0,
-    },
-    receptionists: receptionistStats,
-  };
+    console.log("Formatted Stats:", formattedStats);
+
+    return {
+      success: true,
+      data: {
+        stats: formattedStats,
+        bookingsByDay,
+        bookingStatus,
+        transactions: formattedTransactions,
+      },
+    };
+  } catch (error) {
+    console.error("Reception Report Error:", error);
+    throw new Error(`Error generating receptionist report: ${error.message}`);
+  }
 };
 
 // export const getMemberAttendanceReportService = async (adminId) => {
@@ -1999,6 +2329,17 @@ export const generateGeneralTrainerReportByStaffService = async (
   toDate = null
 ) => {
   try {
+    console.log(
+      "General Trainer By Staff - adminId:",
+      adminId,
+      "staffId:",
+      staffId,
+      "fromDate:",
+      fromDate,
+      "toDate:",
+      toDate
+    );
+
     // 1️⃣ Verify the staff belongs to the admin
     const [staffVerification] = await pool.query(
       `SELECT s.id, s.userId, u.fullName 
@@ -2009,12 +2350,13 @@ export const generateGeneralTrainerReportByStaffService = async (
     );
 
     if (staffVerification.length === 0) {
+      console.log("Staff verification failed - no staff found");
       return {
         stats: {
           totalBookings: 0,
           totalRevenue: 0,
           avgTicket: 0,
-          completed: 0,
+          confirmed: 0,
           cancelled: 0,
           booked: 0,
         },
@@ -2026,115 +2368,336 @@ export const generateGeneralTrainerReportByStaffService = async (
 
     // Get the userId of the staff member to use as trainerId
     const staffUserId = staffVerification[0].userId;
+    console.log(
+      "Staff verified - userId:",
+      staffUserId,
+      "fullName:",
+      staffVerification[0].fullName
+    );
 
-    // Helper function to build the date filter part of the query
-    const getDateFilterQuery = () => {
-      if (fromDate && toDate) {
+    // Helper function to build the date filter part of the query for plan assignments
+    // Only apply date filter if both dates are provided and they are different
+    const getDateFilterQueryForPlans = () => {
+      if (fromDate && toDate && fromDate !== toDate) {
+        return `AND DATE(mpa.assignedAt) BETWEEN ? AND ?`;
+      }
+      // If dates are same (today) or not provided, don't filter (show all data)
+      return "";
+    };
+
+    // Helper function to build the date filter part of the query for bookings
+    const getDateFilterQueryForBookings = () => {
+      if (fromDate && toDate && fromDate !== toDate) {
         return `AND ub.date BETWEEN ? AND ?`;
       }
-      if (fromDate) {
-        return `AND ub.date >= ?`;
-      }
-      if (toDate) {
-        return `AND ub.date <= ?`;
-      }
-      return ""; // No date filter
+      // If dates are same (today) or not provided, don't filter (show all data)
+      return "";
     };
 
     // Helper function to build the parameters array for the date filter
     const getDateFilterParams = () => {
       const params = [];
-      if (fromDate) params.push(fromDate);
-      if (toDate) params.push(toDate);
+      // Only add params if both dates are provided and different
+      if (fromDate && toDate && fromDate !== toDate) {
+        params.push(fromDate);
+        params.push(toDate);
+      }
       return params;
     };
 
-    const dateFilterQuery = getDateFilterQuery();
+    const dateFilterQueryForPlans = getDateFilterQueryForPlans();
+    const dateFilterQueryForBookings = getDateFilterQueryForBookings();
     const dateFilterParams = getDateFilterParams();
 
-    // 2️⃣ Get booking statistics for GROUP bookings for this specific trainer
-    const [bookingStats] = await pool.query(
+    // 2️⃣ Total Bookings: Count of General Trainer plans assigned to this trainer
+    // For GROUP plans: Show plans for members who have GROUP bookings with this trainer OR plans with trainerId
+    // For MEMBER type with trainerType='general': Show plans where trainerId = staffId
+    const queryParams = [
+      adminId,
+      staffId,
+      staffId,
+      staffUserId,
+      ...dateFilterParams,
+    ];
+    console.log("Plan Stats Query Params:", queryParams);
+
+    const [[planStats]] = await pool.query(
       `SELECT 
-        COUNT(*) as totalBookings,
-        0 as totalRevenue,
-        0 as avgTicket,
-        SUM(CASE WHEN bookingStatus = 'Completed' THEN 1 ELSE 0 END) + 0 as completed,
-        SUM(CASE WHEN bookingStatus = 'Cancelled' THEN 1 ELSE 0 END) + 0 as cancelled,
-        SUM(CASE WHEN bookingStatus = 'Booked' THEN 1 ELSE 0 END) + 0 as booked
-      FROM unified_bookings ub
-      WHERE ub.trainerId = ?
-        AND ub.bookingType = 'GROUP'
-        ${dateFilterQuery}`,
-      [staffUserId, ...dateFilterParams]
+        COUNT(*) AS totalBookings,
+        COALESCE(SUM(mpa.amountPaid), 0) AS totalRevenue,
+        SUM(CASE 
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 1 
+          ELSE 0 
+        END) AS confirmed,
+        SUM(CASE 
+          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 1 
+          ELSE 0 
+        END) AS cancelled
+      FROM member_plan_assignment mpa
+      INNER JOIN member m ON mpa.memberId = m.id
+      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      WHERE m.adminId = ?
+        AND (
+          -- Case 1: MEMBER type with trainerType='general' - filter by trainerId in plan
+          (mp.type = 'MEMBER' AND mp.trainerType = 'general' AND mp.trainerId = ?)
+          OR
+          -- Case 2: GROUP type plans where trainerId matches (if plan has trainerId)
+          (mp.type = 'GROUP' AND mp.trainerId = ?)
+          OR
+          -- Case 3: GROUP type plans for members who have GROUP bookings with this trainer
+          (mp.type = 'GROUP' AND EXISTS (
+            SELECT 1 FROM unified_bookings ub 
+            WHERE ub.memberId = m.id 
+            AND ub.trainerId = ?
+            AND ub.bookingType = 'GROUP'
+          ))
+        )
+        ${dateFilterQueryForPlans}`,
+      [adminId, staffId, staffId, staffUserId, ...dateFilterParams]
     );
 
-    // 3️⃣ Bookings by day for this trainer
+    console.log("Plan Stats Result:", planStats);
+
+    // 3️⃣ Booked: Count of GROUP bookings for this trainer
+    const bookedQueryParams = [adminId, staffUserId, ...dateFilterParams];
+    console.log("Booked Stats Query Params:", bookedQueryParams);
+
+    const [[bookedStats]] = await pool.query(
+      `SELECT COUNT(*) AS booked
+      FROM unified_bookings ub
+      INNER JOIN member m ON ub.memberId = m.id
+      WHERE m.adminId = ? 
+        AND ub.trainerId = ?
+        AND ub.bookingType = 'GROUP'
+        ${dateFilterQueryForBookings}`,
+      bookedQueryParams
+    );
+
+    console.log("Booked Stats Result:", bookedStats);
+
+    // 4️⃣ Bookings by Day: General Trainer plan assignments per day (with revenue)
     const [bookingsByDay] = await pool.query(
       `SELECT 
-        DATE(ub.date) as date,
-        COUNT(*) as count
-      FROM unified_bookings ub
-      WHERE ub.trainerId = ?
-        AND ub.bookingType = 'GROUP'
-        ${dateFilterQuery}
-      GROUP BY DATE(ub.date)
+        DATE(mpa.assignedAt) AS date,
+        COUNT(*) AS count,
+        COALESCE(SUM(mpa.amountPaid), 0) AS revenue
+      FROM member_plan_assignment mpa
+      INNER JOIN member m ON mpa.memberId = m.id
+      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      WHERE m.adminId = ?
+        AND (
+          -- Case 1: MEMBER type with trainerType='general' - filter by trainerId in plan
+          (mp.type = 'MEMBER' AND mp.trainerType = 'general' AND mp.trainerId = ?)
+          OR
+          -- Case 2: GROUP type plans where trainerId matches (if plan has trainerId)
+          (mp.type = 'GROUP' AND mp.trainerId = ?)
+          OR
+          -- Case 3: GROUP type plans for members who have GROUP bookings with this trainer
+          (mp.type = 'GROUP' AND EXISTS (
+            SELECT 1 FROM unified_bookings ub 
+            WHERE ub.memberId = m.id 
+            AND ub.trainerId = ?
+            AND ub.bookingType = 'GROUP'
+          ))
+        )
+        ${dateFilterQueryForPlans}
+      GROUP BY DATE(mpa.assignedAt)
       ORDER BY date ASC`,
-      [staffUserId, ...dateFilterParams]
+      [adminId, staffId, staffId, staffUserId, ...dateFilterParams]
     );
 
-    // 4️⃣ Booking status distribution for this trainer
+    // 5️⃣ Booking Status: Active and Inactive General Trainer plans
     const [bookingStatus] = await pool.query(
       `SELECT 
-        ub.bookingStatus,
-        COUNT(*) as count
-      FROM unified_bookings ub
-      WHERE ub.trainerId = ?
-        AND ub.bookingType = 'GROUP'
-        ${dateFilterQuery}
-      GROUP BY ub.bookingStatus`,
-      [staffUserId, ...dateFilterParams]
+        CASE
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
+          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
+          ELSE 'Inactive'
+        END AS bookingStatus,
+        COUNT(*) AS count
+      FROM member_plan_assignment mpa
+      INNER JOIN member m ON mpa.memberId = m.id
+      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      WHERE m.adminId = ?
+        AND (
+          -- Case 1: MEMBER type with trainerType='general' - filter by trainerId in plan
+          (mp.type = 'MEMBER' AND mp.trainerType = 'general' AND mp.trainerId = ?)
+          OR
+          -- Case 2: GROUP type plans where trainerId matches (if plan has trainerId)
+          (mp.type = 'GROUP' AND mp.trainerId = ?)
+          OR
+          -- Case 3: GROUP type plans for members who have GROUP bookings with this trainer
+          (mp.type = 'GROUP' AND EXISTS (
+            SELECT 1 FROM unified_bookings ub 
+            WHERE ub.memberId = m.id 
+            AND ub.trainerId = ?
+            AND ub.bookingType = 'GROUP'
+          ))
+        )
+        ${dateFilterQueryForPlans}
+      GROUP BY 
+        CASE
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
+          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
+          ELSE 'Inactive'
+        END`,
+      [adminId, staffId, staffId, staffUserId, ...dateFilterParams]
     );
 
-    // 5️⃣ Transactions list for this trainer (JOIN IS FIXED HERE)
+    // 6️⃣ Transactions: All members with general trainer plans assigned to this trainer
+    // Parameters: [staffUserId (for trainerName), staffUserId (4x for booking stats), adminId, staffId (for MEMBER), staffId (for GROUP trainerId), staffUserId (for EXISTS), ...dateFilterParams]
+    const transactionQueryParams = [
+      staffUserId,
+      staffUserId,
+      staffUserId,
+      staffUserId,
+      staffUserId,
+      adminId,
+      staffId,
+      staffId,
+      staffUserId,
+      ...dateFilterParams,
+    ];
+    console.log("Transactions Query Params:", transactionQueryParams);
+    console.log("Date Filter Query For Plans:", dateFilterQueryForPlans);
+
     const [transactions] = await pool.query(
       `SELECT 
-          ub.date,
-          trainerUser.fullName AS trainerName,
-          m.fullName AS memberName, -- Get name directly from member table
-          'Group Training' AS type,
-          ub.startTime AS time,
-          ub.bookingStatus AS status
-        FROM unified_bookings ub
-        LEFT JOIN user AS trainerUser 
-            ON ub.trainerId = trainerUser.id
-        LEFT JOIN member AS m
-            ON ub.memberId = m.id
-        WHERE ub.trainerId = ?
-          AND ub.bookingType = 'GROUP'
-          ${dateFilterQuery}
-        ORDER BY ub.date DESC, ub.startTime DESC`,
-      [staffUserId, ...dateFilterParams]
+        DATE(mpa.assignedAt) AS date,
+        m.id AS memberId,
+        m.fullName AS username,
+        mp.id AS planId,
+        mp.name AS planName,
+        mp.sessions AS totalClasses,
+        mpa.amountPaid AS price,
+        mpa.paymentMode,
+        mpa.status AS originalStatus,
+        mpa.membershipTo,
+        CASE
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
+          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
+          ELSE 'Inactive'
+        END AS computedStatus,
+        COALESCE(
+          (SELECT u.fullName FROM user u WHERE u.id = mpa.assignedBy),
+          'System'
+        ) AS assignedBy,
+        COALESCE(
+          (SELECT u.fullName FROM user u 
+           INNER JOIN staff s ON s.userId = u.id 
+           WHERE s.id = mp.trainerId),
+          (SELECT u.fullName FROM user u WHERE u.id = ?),
+          'N/A'
+        ) AS trainerName,
+        mp.trainerId,
+        TIME(mpa.assignedAt) AS time,
+        -- Booking statistics for General Trainer plans
+        COALESCE((
+          SELECT COUNT(*) 
+          FROM unified_bookings ub 
+          WHERE ub.memberId = m.id 
+            AND ub.trainerId = ?
+            AND ub.bookingType = 'GROUP'
+        ), 0) AS classesBooked,
+        COALESCE((
+          SELECT COUNT(*) 
+          FROM unified_bookings ub 
+          WHERE ub.memberId = m.id 
+            AND ub.trainerId = ?
+            AND ub.bookingStatus = 'Confirmed'
+            AND ub.bookingType = 'GROUP'
+        ), 0) AS classesConfirmed,
+        COALESCE((
+          SELECT COUNT(*) 
+          FROM unified_bookings ub 
+          WHERE ub.memberId = m.id 
+            AND ub.trainerId = ?
+            AND ub.bookingStatus = 'Cancelled'
+            AND ub.bookingType = 'GROUP'
+        ), 0) AS classesCancelled,
+        COALESCE((
+          SELECT COUNT(*) 
+          FROM unified_bookings ub 
+          WHERE ub.memberId = m.id 
+            AND ub.trainerId = ?
+            AND ub.bookingStatus = 'Completed'
+            AND ub.bookingType = 'GROUP'
+        ), 0) AS classesCompleted
+      FROM member_plan_assignment mpa
+      INNER JOIN member m ON mpa.memberId = m.id
+      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      WHERE m.adminId = ?
+        AND (
+          -- Case 1: MEMBER type with trainerType='general' - filter by trainerId in plan
+          (mp.type = 'MEMBER' AND mp.trainerType = 'general' AND mp.trainerId = ?)
+          OR
+          -- Case 2: GROUP type plans where trainerId matches (if plan has trainerId)
+          (mp.type = 'GROUP' AND mp.trainerId = ?)
+          OR
+          -- Case 3: GROUP type plans for members who have GROUP bookings with this trainer
+          (mp.type = 'GROUP' AND EXISTS (
+            SELECT 1 FROM unified_bookings ub 
+            WHERE ub.memberId = m.id 
+            AND ub.trainerId = ?
+            AND ub.bookingType = 'GROUP'
+          ))
+        )
+        ${dateFilterQueryForPlans}
+      ORDER BY mpa.assignedAt DESC
+      LIMIT 100`,
+      transactionQueryParams
     );
 
-    // Format summary stats (identical to original)
+    console.log("Transactions Result Count:", transactions.length);
+
+    // Format output for UI
     const formattedStats = {
-      totalBookings: bookingStats[0].totalBookings || 0,
-      totalRevenue: bookingStats[0].totalRevenue || 0,
-      avgTicket: bookingStats[0].avgTicket || 0,
-      completed: bookingStats[0].completed || 0,
-      cancelled: bookingStats[0].cancelled || 0,
-      booked: bookingStats[0].booked || 0,
+      totalBookings: planStats.totalBookings || 0,
+      totalRevenue: parseFloat(planStats.totalRevenue) || 0,
+      confirmed: planStats.confirmed || 0,
+      cancelled: planStats.cancelled || 0,
+      booked: bookedStats.booked || 0,
+      avgTicket:
+        planStats.totalBookings > 0
+          ? parseFloat(planStats.totalRevenue) / planStats.totalBookings
+          : 0,
     };
 
-    // Format transaction list (identical to original)
-    const formattedTransactions = transactions.map((tx) => ({
-      date: tx.date,
-      trainer: tx.trainerName || "N/A",
-      username: tx.memberName || "N/A",
-      type: tx.type,
-      time: tx.time,
-      status: tx.status,
-    }));
+    console.log("Formatted Stats:", formattedStats);
+
+    // Format transactions data
+    const formattedTransactions = transactions.map((transaction) => {
+      // Format time to HH:MM if it exists
+      let formattedTime = "-";
+      if (transaction.time) {
+        const timeStr = String(transaction.time);
+        if (timeStr.includes(":")) {
+          formattedTime = timeStr.substring(0, 5);
+        } else {
+          formattedTime = timeStr;
+        }
+      }
+
+      return {
+        date: transaction.date,
+        memberId: transaction.memberId,
+        memberName: transaction.username || "N/A",
+        planId: transaction.planId,
+        planName: transaction.planName || "Group Training Plan",
+        trainer: transaction.trainerName || "N/A",
+        trainerId: transaction.trainerId,
+        planPrice: parseFloat(transaction.price) || 0,
+        totalClasses: transaction.totalClasses || 0,
+        classesBooked: transaction.classesBooked || 0,
+        classesConfirmed: transaction.classesConfirmed || 0,
+        classesCancelled: transaction.classesCancelled || 0,
+        classesCompleted: transaction.classesCompleted || 0,
+        paymentMode: transaction.paymentMode || "N/A",
+        time: formattedTime,
+        status: transaction.computedStatus || "Inactive",
+        revenue: parseFloat(transaction.price) || 0,
+      };
+    });
 
     return {
       stats: formattedStats,
@@ -2154,243 +2717,74 @@ export const generateAdminHousekeepingReportService = async (
   startDate,
   endDate
 ) => {
-  try {
-    if (!adminId) {
-      throw new Error("adminId is required");
-    }
+  // 1️⃣ Get all housekeeping staff for admin
+  const [staffList] = await pool.query(
+    `
+    SELECT s.id
+    FROM staff s
+    JOIN user u ON s.userId = u.id
+    WHERE s.adminId = ?
+      AND u.roleId = 8
+    `,
+    [adminId]
+  );
 
-    /* =====================================================
-       1️⃣ GET HOUSEKEEPING STAFF (roleId = 8)
-    ===================================================== */
-    const [staffMembers] = await pool.query(
-      `
-      SELECT 
-        s.id,
-        s.status,
-        u.id AS userId,
-        u.fullName,
-        u.email,
-        u.phone
-      FROM staff s
-      JOIN user u ON s.userId = u.id
-      WHERE s.adminId = ?
-        AND u.roleId = 8
-      `,
-      [adminId]
+  let staffDetails = [];
+  let totalTasks = 0;
+  let completedTasks = 0;
+  let pendingTasks = 0;
+  let inProgressTasks = 0;
+
+  // 2️⃣ Call STAFF service for each staff
+  for (const staff of staffList) {
+    const report = await generateStaffHousekeepingReportService(
+      adminId,
+      staff.id,
+      startDate,
+      endDate
     );
 
-    /* =====================================================
-       2️⃣ EMPTY STAFF GUARD (🔥 LIVE FIX)
-    ===================================================== */
-    if (staffMembers.length === 0) {
-      return {
-        adminId,
-        reportDate: new Date(),
-        dateRange: { startDate, endDate },
-        summary: {
-          totalStaff: 0,
-          activeStaff: 0,
-          totalTasks: 0,
-          completedTasks: 0,
-          pendingTasks: 0,
-          inProgressTasks: 0,
-          overallTaskCompletionRate: 0,
-          totalAttendanceRecords: 0,
-          presentDays: 0,
-          overallAttendanceRate: 0,
-        },
-        staffDetails: [],
-      };
-    }
-
-    /* =====================================================
-       3️⃣ GET HOUSEKEEPING TASKS
-    ===================================================== */
-    let taskQuery = `
-      SELECT 
-        t.*,
-        u.fullName AS assignedToName
-      FROM tasks t
-      JOIN staff s ON t.assignedTo = s.id
-      JOIN user u ON s.userId = u.id
-      WHERE t.createdById = ?
-        AND u.roleId = 8
-        AND t.taskTitle LIKE '%housekeeping%'
-    `;
-
-    const taskParams = [adminId];
-
-    if (startDate && endDate) {
-      taskQuery += ` AND t.createdAt BETWEEN ? AND ?`;
-      taskParams.push(`${startDate} 00:00:00`, `${endDate} 23:59:59`);
-    }
-
-    const [housekeepingTasks] = await pool.query(taskQuery, taskParams);
-
-    /* =====================================================
-       4️⃣ GET ATTENDANCE (🔥 IN () SAFE)
-    ===================================================== */
-    const staffIds = staffMembers.map((s) => s.id);
-
-    let attendanceQuery = `
-      SELECT 
-        ma.*,
-        u.fullName AS staffName
-      FROM memberattendance ma
-      JOIN staff s ON ma.staffId = s.id
-      JOIN user u ON s.userId = u.id
-      WHERE ma.staffId IN (?)
-        AND u.roleId = 8
-    `;
-
-    const attendanceParams = [staffIds];
-
-    if (startDate && endDate) {
-      attendanceQuery += ` AND ma.checkIn BETWEEN ? AND ?`;
-      attendanceParams.push(`${startDate} 00:00:00`, `${endDate} 23:59:59`);
-    }
-
-    const [attendanceRecords] = await pool.query(
-      attendanceQuery,
-      attendanceParams
-    );
-
-    /* =====================================================
-       5️⃣ STAFF LEVEL REPORT
-    ===================================================== */
-    const staffReport = staffMembers.map((staff) => {
-      const staffTasks = housekeepingTasks.filter(
-        (t) => t.assignedTo === staff.id
-      );
-
-      const staffAttendance = attendanceRecords.filter(
-        (a) => a.staffId === staff.id
-      );
-
-      const completedTasks = staffTasks.filter(
-        (t) => t.status === "Completed"
-      ).length;
-
-      const taskCompletionRate =
-        staffTasks.length > 0
-          ? ((completedTasks / staffTasks.length) * 100).toFixed(2)
-          : "0.00";
-
-      const totalDays = staffAttendance.length;
-      const presentDays = staffAttendance.filter(
-        (a) => a.status === "Present"
-      ).length;
-
-      const attendanceRate =
-        totalDays > 0 ? ((presentDays / totalDays) * 100).toFixed(2) : "0.00";
-
-      let totalMinutes = 0;
-      let daysWithCheckout = 0;
-
-      staffAttendance.forEach((a) => {
-        if (a.checkOut) {
-          totalMinutes += (new Date(a.checkOut) - new Date(a.checkIn)) / 60000;
-          daysWithCheckout++;
-        }
-      });
-
-      const avgWorkingHours =
-        daysWithCheckout > 0
-          ? (totalMinutes / daysWithCheckout / 60).toFixed(2)
-          : "0.00";
-
-      return {
-        staffId: staff.id,
-        staffName: staff.fullName,
-        email: staff.email,
-        phone: staff.phone,
-        status: staff.status,
-
-        totalTasks: staffTasks.length,
-        completedTasks,
-        pendingTasks: staffTasks.filter((t) => t.status === "Pending").length,
-        inProgressTasks: staffTasks.filter((t) => t.status === "In Progress")
-          .length,
-        taskCompletionRate,
-
-        attendanceMetrics: {
-          totalDays,
-          presentDays,
-          attendanceRate,
-          avgWorkingHours,
-        },
-
-        recentTasks: staffTasks.slice(0, 5).map((t) => ({
-          id: t.id,
-          title: t.taskTitle,
-          description: t.description,
-          priority: t.priority,
-          status: t.status,
-          dueDate: t.dueDate,
-        })),
-
-        recentAttendance: staffAttendance.slice(0, 5).map((a) => ({
-          id: a.id,
-          checkIn: a.checkIn,
-          checkOut: a.checkOut,
-          status: a.status,
-          notes: a.notes,
-        })),
-      };
+    staffDetails.push({
+      staffId: report.staffId,
+      staffName: report.staffInfo.fullName,
+      email: report.staffInfo.email,
+      phone: report.staffInfo.phone,
+      status: report.staffInfo.status,
+      totalTasks: report.taskMetrics.total,
+      completedTasks: report.taskMetrics.completed,
+      pendingTasks: report.taskMetrics.pending,
+      inProgressTasks: report.taskMetrics.inProgress,
+      taskCompletionRate: report.taskMetrics.completionRate,
+      attendanceMetrics: report.attendanceMetrics,
+      recentTasks: report.recentTasks,
+      recentAttendance: report.recentAttendance,
     });
 
-    /* =====================================================
-       6️⃣ SUMMARY
-    ===================================================== */
-    const summary = {
-      totalStaff: staffMembers.length,
-      activeStaff: staffMembers.filter((s) => s.status === "Active").length,
-
-      totalTasks: housekeepingTasks.length,
-      completedTasks: housekeepingTasks.filter((t) => t.status === "Completed")
-        .length,
-      pendingTasks: housekeepingTasks.filter((t) => t.status === "Pending")
-        .length,
-      inProgressTasks: housekeepingTasks.filter(
-        (t) => t.status === "In Progress"
-      ).length,
-
-      overallTaskCompletionRate:
-        housekeepingTasks.length > 0
-          ? (
-              (housekeepingTasks.filter((t) => t.status === "Completed")
-                .length /
-                housekeepingTasks.length) *
-              100
-            ).toFixed(2)
-          : "0.00",
-
-      totalAttendanceRecords: attendanceRecords.length,
-      presentDays: attendanceRecords.filter((a) => a.status === "Present")
-        .length,
-
-      overallAttendanceRate:
-        attendanceRecords.length > 0
-          ? (
-              (attendanceRecords.filter((a) => a.status === "Present").length /
-                attendanceRecords.length) *
-              100
-            ).toFixed(2)
-          : "0.00",
-    };
-
-    return {
-      adminId,
-      reportDate: new Date(),
-      dateRange: { startDate, endDate },
-      summary,
-      staffDetails: staffReport,
-    };
-  } catch (error) {
-    console.error("HOUSEKEEPING REPORT ERROR:", error);
-    throw error; // 🔥 real error expose
+    totalTasks += report.taskMetrics.total;
+    completedTasks += report.taskMetrics.completed;
+    pendingTasks += report.taskMetrics.pending;
+    inProgressTasks += report.taskMetrics.inProgress;
   }
+
+  return {
+    adminId,
+    reportDate: new Date(),
+    summary: {
+      totalStaff: staffList.length,
+      activeStaff: staffList.length,
+      totalTasks,
+      completedTasks,
+      pendingTasks,
+      inProgressTasks,
+      overallTaskCompletionRate:
+        totalTasks > 0
+          ? ((completedTasks / totalTasks) * 100).toFixed(2)
+          : "0.00",
+    },
+    staffDetails,
+  };
 };
+
 
 // Generate housekeeping report for a specific staff member
 export const generateStaffHousekeepingReportService = async (
@@ -2401,7 +2795,7 @@ export const generateStaffHousekeepingReportService = async (
 ) => {
   try {
     /* =====================================================
-       1️⃣ VERIFY STAFF (ADMIN + ROLE)
+       1️⃣ VERIFY STAFF (ADMIN + HOUSEKEEPING ROLE)
     ===================================================== */
     const [staffResult] = await pool.query(
       `
@@ -2442,7 +2836,7 @@ export const generateStaffHousekeepingReportService = async (
     const staff = staffResult[0];
 
     /* =====================================================
-       2️⃣ DATE RANGE NORMALIZATION (LIVE FIX)
+       2️⃣ DATE RANGE NORMALIZATION
     ===================================================== */
     let fromDate = null;
     let toDate = null;
@@ -2453,29 +2847,32 @@ export const generateStaffHousekeepingReportService = async (
     }
 
     /* =====================================================
-       3️⃣ FETCH TASKS
+       3️⃣ FETCH TASKS (✅ FIXED)
+       ✔ NO taskTitle filter
+       ✔ assignedTo = staffId
     ===================================================== */
-    let taskQuery = `
-      SELECT *
-      FROM tasks
-      WHERE assignedTo = ?
-        AND taskTitle LIKE '%housekeeping%'
-    `;
-    const taskParams = [staffId];
+let taskQuery = `
+  SELECT *
+  FROM tasks
+  WHERE assignedTo = ?
+`;
+const taskParams = [staffId];
 
-    if (fromDate && toDate) {
-      taskQuery += ` AND createdAt BETWEEN ? AND ?`;
-      taskParams.push(fromDate, toDate);
-    }
+if (fromDate && toDate) {
+  taskQuery += ` AND createdAt BETWEEN ? AND ?`;
+  taskParams.push(fromDate, toDate);
+}
 
-    const [housekeepingTasks] = await pool.query(taskQuery, taskParams);
+const [housekeepingTasks] = await pool.query(taskQuery, taskParams);
+
 
     /* =====================================================
-       4️⃣ FETCH ATTENDANCE (⚠️ TABLE CASE SAFE)
+       4️⃣ FETCH ATTENDANCE
+       ⚠️ NOTE: memberattendance.staffId mostly NULL in DB
     ===================================================== */
     let attendanceQuery = `
       SELECT *
-      FROM memberattendance   -- ✅ keep lowercase for Linux
+      FROM memberattendance
       WHERE staffId = ?
     `;
     const attendanceParams = [staffId];
@@ -2491,16 +2888,18 @@ export const generateStaffHousekeepingReportService = async (
     );
 
     /* =====================================================
-       5️⃣ TASK METRICS
+       5️⃣ TASK METRICS (✅ CASE SAFE)
     ===================================================== */
     const completedTasks = housekeepingTasks.filter(
-      (t) => t.status === "Completed"
+      (t) => t.status?.toLowerCase() === "completed"
     ).length;
+
     const pendingTasks = housekeepingTasks.filter(
-      (t) => t.status === "Pending"
+      (t) => t.status?.toLowerCase() === "pending"
     ).length;
+
     const inProgressTasks = housekeepingTasks.filter(
-      (t) => t.status === "In Progress"
+      (t) => t.status?.toLowerCase() === "in progress"
     ).length;
 
     const taskCompletionRate =
@@ -2509,9 +2908,14 @@ export const generateStaffHousekeepingReportService = async (
         : "0.00";
 
     const tasksByPriority = {
-      High: housekeepingTasks.filter((t) => t.priority === "High").length,
-      Medium: housekeepingTasks.filter((t) => t.priority === "Medium").length,
-      Low: housekeepingTasks.filter((t) => t.priority === "Low").length,
+      High: housekeepingTasks.filter(
+        (t) => t.priority?.toLowerCase() === "high"
+      ).length,
+      Medium: housekeepingTasks.filter(
+        (t) => t.priority?.toLowerCase() === "medium"
+      ).length,
+      Low: housekeepingTasks.filter((t) => t.priority?.toLowerCase() === "low")
+        .length,
     };
 
     /* =====================================================
@@ -2519,7 +2923,7 @@ export const generateStaffHousekeepingReportService = async (
     ===================================================== */
     const totalDays = attendanceRecords.length;
     const presentDays = attendanceRecords.filter(
-      (r) => r.status === "Present"
+      (r) => r.status === "Present" || r.status === "In Gym"
     ).length;
 
     const attendanceRate =
@@ -2558,7 +2962,9 @@ export const generateStaffHousekeepingReportService = async (
       }
 
       attendanceByMonth[month].total++;
-      if (r.status === "Present") attendanceByMonth[month].present++;
+      if (r.status === "Present" || r.status === "In Gym") {
+        attendanceByMonth[month].present++;
+      }
     });
 
     Object.keys(attendanceByMonth).forEach((m) => {
@@ -2604,6 +3010,6 @@ export const generateStaffHousekeepingReportService = async (
     };
   } catch (error) {
     console.error("STAFF HOUSEKEEPING REPORT ERROR:", error);
-    throw error; // 🔥 ORIGINAL ERROR THROW (LIVE DEBUG)
+    throw error;
   }
 };
