@@ -391,10 +391,43 @@ export const generateMemberReportService = async (adminId) => {
   }
 };
 
-export const generateGeneralTrainerReportService = async (adminId) => {
+export const generateGeneralTrainerReportService = async ( adminId,
+  fromDate,
+  toDate) => {
+    const buildDateFilter = (column, fromDate, toDate) => {
+  let condition = "";
+  let values = [];
+
+  if (fromDate && toDate) {
+    condition = `AND DATE(${column}) BETWEEN ? AND ?`;
+    values.push(fromDate, toDate);
+  } else if (fromDate) {
+    condition = `AND DATE(${column}) >= ?`;
+    values.push(fromDate);
+  } else if (toDate) {
+    condition = `AND DATE(${column}) <= ?`;
+    values.push(toDate);
+  }
+
+  return { condition, values };
+};
+
   try {
     // 1️⃣ Total Bookings: Count of General Trainer plans assigned
     // General Trainer plans: type = 'GROUP' OR (type = 'MEMBER' AND trainerType = 'general')
+
+    const planDateFilter = buildDateFilter(
+  "mpa.assignedAt",
+  fromDate,
+  toDate
+);
+
+const bookingDateFilter = buildDateFilter(
+  "ub.createdAt",
+  fromDate,
+  toDate
+);
+
     const [[planStats]] = await pool.query(
       `SELECT 
         COUNT(*) AS totalBookings,
@@ -411,9 +444,10 @@ export const generateGeneralTrainerReportService = async (adminId) => {
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
+          ${planDateFilter.condition}
         AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))`,
-      [adminId]
-    );
+ [adminId, ...planDateFilter.values]   
+ );
 
     // 2️⃣ Booked: Count of bookings from dynamic page (unified_bookings where bookingType = 'GROUP')
     const [[bookedStats]] = await pool.query(
@@ -421,8 +455,9 @@ export const generateGeneralTrainerReportService = async (adminId) => {
       FROM unified_bookings ub
       INNER JOIN member m ON ub.memberId = m.id
       WHERE m.adminId = ? 
+      ${bookingDateFilter.condition}
         AND ub.bookingType = 'GROUP'`,
-      [adminId]
+      [adminId , ...bookingDateFilter.values]
     );
 
     // 3️⃣ Bookings by Day: General Trainer plan assignments per day (with revenue)
@@ -435,10 +470,11 @@ export const generateGeneralTrainerReportService = async (adminId) => {
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
+        ${planDateFilter.condition}
         AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))
       GROUP BY DATE(mpa.assignedAt)
       ORDER BY date ASC`,
-      [adminId]
+      [adminId, ...planDateFilter.values]
     );
 
     // 4️⃣ Booking Status: Active and Inactive General Trainer plans
@@ -454,6 +490,7 @@ export const generateGeneralTrainerReportService = async (adminId) => {
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
+        ${planDateFilter.condition}
         AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))
       GROUP BY 
         CASE
@@ -461,7 +498,7 @@ export const generateGeneralTrainerReportService = async (adminId) => {
           WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
           ELSE 'Inactive'
         END`,
-      [adminId]
+      [adminId , ...planDateFilter.values]
     );
 
     // 5️⃣ Transactions list for UI
@@ -527,10 +564,11 @@ export const generateGeneralTrainerReportService = async (adminId) => {
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
+        ${planDateFilter.condition}
         AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))
       ORDER BY mpa.assignedAt DESC
       LIMIT 100`,
-      [adminId]
+      [adminId , ...planDateFilter.values]
     );
 
     // Format output for UI

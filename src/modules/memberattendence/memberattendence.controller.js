@@ -640,67 +640,67 @@ export const getAttendanceByAdminId = async (req, res, next) => {
     // ✅ Fetch both MEMBER and STAFF attendance
     // Members: memberattendance.memberId -> member.id -> member.adminId
     // Staff: memberattendance.memberId -> user.id -> user.adminId OR staff.adminId
-    const sql = `
-      SELECT
-        a.id,
-        DATE(a.checkIn) AS date,
-        a.checkIn,
-        a.checkOut,
-        a.mode,
-        
-        /* NAME - from member or user */
-        COALESCE(m.fullName, u.fullName) AS name,
-        
-        /* ROLE - from member's role or user's role */
-        COALESCE(mr.name, ur.name) AS role,
-        
-        /* TYPE - Member or Staff */
-        CASE
-          WHEN m.id IS NOT NULL THEN 'Member'
-          WHEN s.id IS NOT NULL THEN 'Staff'
-          ELSE 'Unknown'
-        END AS type,
-        
-        /* SHIFT - for staff only */
-        CASE
-          WHEN s.id IS NOT NULL THEN sh.shiftType
-          ELSE NULL
-        END AS shift,
+const sql = `
+SELECT
+  a.id,
+  DATE(a.checkIn) AS date,
+  a.checkIn,
+  a.checkOut,
+  a.mode,
 
-        /* ✅ DYNAMIC STATUS */
-        CASE
-          WHEN a.checkIn IS NOT NULL AND a.checkOut IS NULL THEN 'In Gym'
-          WHEN a.checkOut IS NOT NULL THEN 'Present'
-          ELSE a.status
-        END AS status
+  /* NAME */
+  COALESCE(m.fullName, u.fullName) AS name,
 
-      FROM memberattendance a
-      
-      /* MEMBER JOIN */
-      LEFT JOIN member m ON m.id = a.memberId
-      LEFT JOIN user mu ON mu.id = m.userId
-      LEFT JOIN role mr ON mr.id = mu.roleId
-      
-      /* STAFF/USER JOIN */
-      LEFT JOIN user u ON u.id = a.memberId AND m.id IS NULL
-      LEFT JOIN role ur ON ur.id = u.roleId
-      LEFT JOIN staff s ON s.userId = u.id
-      
-      /* SHIFT JOIN (for staff) */
-      LEFT JOIN shifts sh ON sh.staffIds = s.id 
-        AND DATE(sh.shiftDate) = DATE(a.checkIn)
-      
-      WHERE (
-        (m.id IS NOT NULL AND m.adminId = ?)
-        OR
-        (u.id IS NOT NULL AND (u.adminId = ? OR s.adminId = ?))
-      )
-      ${dateFilter}
-      ORDER BY a.checkIn DESC
-    `;
+  /* ROLE */
+  COALESCE(mr.name, ur.name) AS role,
+
+  /* TYPE */
+  CASE
+    WHEN m.id IS NOT NULL THEN 'Member'
+    WHEN s.id IS NOT NULL THEN 'Staff'
+    ELSE 'Unknown'
+  END AS type,
+
+  /* SHIFT (staff only) */
+  sh.shiftType AS shift,
+
+  /* STATUS */
+  CASE
+    WHEN a.checkIn IS NOT NULL AND a.checkOut IS NULL THEN 'In Gym'
+    WHEN a.checkOut IS NOT NULL THEN 'Present'
+    ELSE a.status
+  END AS status
+
+FROM memberattendance a
+
+/* ================= MEMBER ================= */
+LEFT JOIN member m ON m.id = a.memberId
+LEFT JOIN user mu ON mu.id = m.userId
+LEFT JOIN role mr ON mr.id = mu.roleId
+
+/* ================= STAFF ================= */
+LEFT JOIN staff s ON s.id = a.staffId
+LEFT JOIN user u ON u.id = s.userId
+LEFT JOIN role ur ON ur.id = u.roleId
+
+/* ================= SHIFT ================= */
+LEFT JOIN shifts sh 
+  ON sh.staffIds = s.id
+ AND DATE(sh.shiftDate) = DATE(a.checkIn)
+
+WHERE (
+   (m.id IS NOT NULL AND m.adminId = ?)
+   OR
+   (s.id IS NOT NULL AND s.adminId = ?)
+)
+${dateFilter}
+ORDER BY a.checkIn DESC
+`;
+
 
     // Parameters: adminId (for member), adminId (for user.adminId), adminId (for staff.adminId), then date params
-    const queryParams = [adminId, adminId, adminId, ...dateParams];
+const queryParams = [adminId, adminId, ...dateParams];
+
 
     const [rows] = await pool.query(sql, queryParams);
 
