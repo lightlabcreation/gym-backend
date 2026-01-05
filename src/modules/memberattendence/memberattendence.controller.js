@@ -905,5 +905,3 @@ export const getStaffAttendanceByAdmin = async (req, res, next) => {
     next(err);
   }
 };
-
-

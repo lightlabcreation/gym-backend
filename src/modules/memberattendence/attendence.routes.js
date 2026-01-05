@@ -1,6 +1,6 @@
 import express from "express";
 import {
-  // getAttendanceByAdminId,
+  getAttendanceByAdminId,
   getStaffAttendanceByAdmin,
   getMemberAttendanceByAdmin,
   memberCheckIn,
@@ -15,7 +15,7 @@ import {
 const router = express.Router();
 
 
-
+router.get("/admin", getAttendanceByAdminId);
 router.get("/member",getMemberAttendanceByAdmin);
 router.get("/staff",  getStaffAttendanceByAdmin);
 router.post("/checkin", memberCheckIn);

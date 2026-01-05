@@ -27,11 +27,14 @@
 //     console.error("❌ MySQL connection failed:", err.message);
 //   });
 
-// // live database
+
+
+// live database
 import mysql from "mysql2";
 import dotenv from "dotenv";
 dotenv.config();
-// Create a *Promise Pool directly*
+
+// Create a **Promise Pool directly**
 export const pool = mysql
   .createPool({
     host: "gondola.proxy.rlwy.net",
