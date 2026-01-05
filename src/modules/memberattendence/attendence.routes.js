@@ -1,6 +1,8 @@
 import express from "express";
 import {
   getAttendanceByAdminId,
+  getStaffAttendanceByAdmin,
+  getMemberAttendanceByAdmin,
   memberCheckIn,
   memberCheckOut,
   getDailyAttendance,
@@ -12,12 +14,10 @@ import {
 
 const router = express.Router();
 
-/**
- * Attendance Routes
- */
 
-// ✅ Member Check-in (QR + Manual)
 router.get("/admin", getAttendanceByAdminId);
+router.get("/member",getMemberAttendanceByAdmin);
+router.get("/staff",  getStaffAttendanceByAdmin);
 router.post("/checkin", memberCheckIn);
 
 // ✅ Member Check-out

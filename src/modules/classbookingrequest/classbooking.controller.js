@@ -687,7 +687,7 @@ export const getBookingRequestsByBranch = async (req, res) => {
 //       [adminId]
 //     );
 
-    
+
 
 //     res.json({
 //       success: true,
@@ -1324,7 +1324,7 @@ export const createUnifiedBooking = async (req, res) => {
     // - Active -> Completed (when endTime passed)
     // - Booked -> Completed (if missed)
     const initialStatus = "Booked"; // Always "Booked" for new bookings
-    
+
     console.log(`✅ New Booking Created with Status:`, {
       date,
       startTime,
@@ -1527,11 +1527,11 @@ export const createUnifiedBooking = async (req, res) => {
 //         s.sessionName,
 //         c.className
 //       FROM unified_bookings b
-      
+
 //       -- Member Details Join
 //       LEFT JOIN member m ON m.id = b.memberId
 //       LEFT JOIN user um ON um.id = m.userId
-      
+
 //       /******************************************************
 //        * TRAINER JOIN UPDATED  
 //        * Pehle hum staff table join kar rahe the:
@@ -1584,7 +1584,7 @@ export const getUnifiedBookingsByBranch = async (req, res) => {
 
         um.fullName AS memberName,
         ut.fullName AS trainerName,
-        s.sessionName,
+        COALESCE(s.sessionName, mp.name) AS sessionName,
         c.className
 
       FROM unified_bookings b
@@ -1592,6 +1592,7 @@ export const getUnifiedBookingsByBranch = async (req, res) => {
       LEFT JOIN user um ON um.id = m.userId
       LEFT JOIN user ut ON ut.id = b.trainerId
       LEFT JOIN session s ON s.id = b.sessionId
+      LEFT JOIN memberplan mp ON mp.id = b.sessionId 
       LEFT JOIN classschedule c ON c.id = b.classId
 
       WHERE m.adminId = ?
@@ -1641,7 +1642,7 @@ export const getUnifiedBookingsByTrainer = async (req, res) => {
         b.branchId,
         m.fullName AS memberName,
         um.fullName AS trainerName,
-        s.sessionName,
+        COALESCE(s.sessionName, mp.name) AS sessionName,
         c.className,
         -- Check if booking was created by receptionist (no sessionId means direct booking)
         CASE WHEN b.sessionId IS NULL THEN 1 ELSE 0 END AS isReceptionistBooking
@@ -1650,6 +1651,7 @@ export const getUnifiedBookingsByTrainer = async (req, res) => {
       LEFT JOIN user um ON um.id = m.userId
       LEFT JOIN user ut ON ut.id = b.trainerId
       LEFT JOIN session s ON s.id = b.sessionId
+      LEFT JOIN memberplan mp ON mp.id = b.sessionId
       LEFT JOIN classschedule c ON c.id = b.classId
       WHERE b.trainerId = ? AND b.bookingType = 'PT'
       ORDER BY b.date DESC, b.startTime DESC
@@ -1842,12 +1844,13 @@ export const getUnifiedBookingById = async (req, res) => {
       SELECT 
         b.*,
         ut.fullName AS trainerName,       -- trainer name
-        s.sessionName,                    -- session name (for PT)
+        COALESCE(s.sessionName, mp.name) AS sessionName,                    -- session name (for PT)
         cs.className                      -- class name (for GROUP)
       FROM unified_bookings b
       LEFT JOIN staff t ON t.id = b.trainerId
       LEFT JOIN user ut ON ut.id = t.userId
       LEFT JOIN session s ON s.id = b.sessionId
+      LEFT JOIN memberplan mp ON mp.id = b.sessionId
       LEFT JOIN classschedule cs ON cs.id = b.classId   -- class name yahi se aata hai
       WHERE b.id = ?
       `,
@@ -2190,12 +2193,12 @@ export const getUnifiedBookingsByMember = async (req, res) => {
       SELECT 
         b.*,
         ut.fullName AS trainerName,
-        s.sessionName,
+        COALESCE(s.sessionName, mp.name) AS sessionName,
         c.className
       FROM unified_bookings b
-      LEFT JOIN staff t ON t.id = b.trainerId
-      LEFT JOIN user ut ON ut.id = t.userId
+      LEFT JOIN user ut ON ut.id = b.trainerId
       LEFT JOIN session s ON s.id = b.sessionId
+      LEFT JOIN memberplan mp ON mp.id = b.sessionId
       LEFT JOIN classschedule c ON c.id = b.classId
       WHERE b.memberId = ?
       ORDER BY b.date DESC
@@ -2332,11 +2335,12 @@ export const getPTBookingsByAdminId = async (req, res) => {
         ub.*,
         m.fullName AS memberName,
         t.fullName AS trainerName,
-        s.sessionName
+        COALESCE(s.sessionName, mp.name) AS sessionName
       FROM unified_bookings ub
       LEFT JOIN member m ON m.id = ub.memberId
       LEFT JOIN user t ON t.id = ub.trainerId
       LEFT JOIN session s ON s.id = ub.sessionId
+      LEFT JOIN memberplan mp ON mp.id = ub.sessionId
       WHERE ub.bookingType = 'PT'
         AND (
           s.adminId = ?
