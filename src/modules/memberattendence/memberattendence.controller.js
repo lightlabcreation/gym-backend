@@ -615,172 +615,172 @@ export const deleteAttendance = async (req, res, next) => {
 // };
 
 
-// export const getAttendanceByAdminId = async (req, res, next) => {
-//   try {
-//     const { adminId, from, to } = req.query;
+export const getAttendanceByAdminId = async (req, res, next) => {
+  try {
+    const { adminId, from, to } = req.query;
 
-//     if (!adminId) {
-//       return res.status(400).json({
-//         success: false,
-//         message: "adminId is required",
-//       });
-//     }
+    if (!adminId) {
+      return res.status(400).json({
+        success: false,
+        message: "adminId is required",
+      });
+    }
 
-//     // Build date filter
-//     let dateFilter = "";
-//     const dateParams = [];
+    // Build date filter
+    let dateFilter = "";
+    const dateParams = [];
     
-//     if (from && to) {
-//       const fromDate = new Date(from).toISOString().slice(0, 10);
-//       const toDate = new Date(to).toISOString().slice(0, 10);
-//       dateFilter = " AND DATE(a.checkIn) BETWEEN ? AND ?";
-//       dateParams.push(fromDate, toDate);
-//     }
+    if (from && to) {
+      const fromDate = new Date(from).toISOString().slice(0, 10);
+      const toDate = new Date(to).toISOString().slice(0, 10);
+      dateFilter = " AND DATE(a.checkIn) BETWEEN ? AND ?";
+      dateParams.push(fromDate, toDate);
+    }
 
-//     // ✅ Fetch both MEMBER and STAFF attendance
-//     // Members: memberattendance.memberId -> member.id -> member.adminId
-//     // Staff: memberattendance.memberId -> user.id -> user.adminId OR staff.adminId
-// const sql = `
-// SELECT
-//   a.id,
-//   DATE(a.checkIn) AS date,
-//   a.checkIn,
-//   a.checkOut,
-//   a.mode,
+    // ✅ Fetch both MEMBER and STAFF attendance
+    // Members: memberattendance.memberId -> member.id -> member.adminId
+    // Staff: memberattendance.memberId -> user.id -> user.adminId OR staff.adminId
+const sql = `
+SELECT
+  a.id,
+  DATE(a.checkIn) AS date,
+  a.checkIn,
+  a.checkOut,
+  a.mode,
 
-//   /* NAME */
-//   COALESCE(m.fullName, u.fullName) AS name,
+  /* NAME */
+  COALESCE(m.fullName, u.fullName) AS name,
 
-//   /* ROLE */
-//   COALESCE(mr.name, ur.name) AS role,
+  /* ROLE */
+  COALESCE(mr.name, ur.name) AS role,
 
-//   /* TYPE */
-//   CASE
-//     WHEN m.id IS NOT NULL THEN 'Member'
-//     WHEN s.id IS NOT NULL THEN 'Staff'
-//     ELSE 'Unknown'
-//   END AS type,
+  /* TYPE */
+  CASE
+    WHEN m.id IS NOT NULL THEN 'Member'
+    WHEN s.id IS NOT NULL THEN 'Staff'
+    ELSE 'Unknown'
+  END AS type,
 
-//   /* SHIFT (staff only) */
-//   sh.shiftType AS shift,
+  /* SHIFT (staff only) */
+  sh.shiftType AS shift,
 
-//   /* STATUS */
-//   CASE
-//     WHEN a.checkIn IS NOT NULL AND a.checkOut IS NULL THEN 'In Gym'
-//     WHEN a.checkOut IS NOT NULL THEN 'Present'
-//     ELSE a.status
-//   END AS status
+  /* STATUS */
+  CASE
+    WHEN a.checkIn IS NOT NULL AND a.checkOut IS NULL THEN 'In Gym'
+    WHEN a.checkOut IS NOT NULL THEN 'Present'
+    ELSE a.status
+  END AS status
 
-// FROM memberattendance a
+FROM memberattendance a
 
-// /* ================= MEMBER ================= */
-// LEFT JOIN member m ON m.id = a.memberId
-// LEFT JOIN user mu ON mu.id = m.userId
-// LEFT JOIN role mr ON mr.id = mu.roleId
+/* ================= MEMBER ================= */
+LEFT JOIN member m ON m.id = a.memberId
+LEFT JOIN user mu ON mu.id = m.userId
+LEFT JOIN role mr ON mr.id = mu.roleId
 
-// /* ================= STAFF ================= */
-// LEFT JOIN staff s ON s.id = a.staffId
-// LEFT JOIN user u ON u.id = s.userId
-// LEFT JOIN role ur ON ur.id = u.roleId
+/* ================= STAFF ================= */
+LEFT JOIN staff s ON s.id = a.staffId
+LEFT JOIN user u ON u.id = s.userId
+LEFT JOIN role ur ON ur.id = u.roleId
 
-// /* ================= SHIFT ================= */
-// LEFT JOIN shifts sh 
-//   ON sh.staffIds = s.id
-//  AND DATE(sh.shiftDate) = DATE(a.checkIn)
+/* ================= SHIFT ================= */
+LEFT JOIN shifts sh 
+  ON sh.staffIds = s.id
+ AND DATE(sh.shiftDate) = DATE(a.checkIn)
 
-// WHERE (
-//    (m.id IS NOT NULL AND m.adminId = ?)
-//    OR
-//    (s.id IS NOT NULL AND s.adminId = ?)
-// )
-// ${dateFilter}
-// ORDER BY a.checkIn DESC
-// `;
-
-
-//     // Parameters: adminId (for member), adminId (for user.adminId), adminId (for staff.adminId), then date params
-// const queryParams = [adminId, adminId, ...dateParams];
+WHERE (
+   (m.id IS NOT NULL AND m.adminId = ?)
+   OR
+   (s.id IS NOT NULL AND s.adminId = ?)
+)
+${dateFilter}
+ORDER BY a.checkIn DESC
+`;
 
 
-//     const [rows] = await pool.query(sql, queryParams);
+    // Parameters: adminId (for member), adminId (for user.adminId), adminId (for staff.adminId), then date params
+const queryParams = [adminId, adminId, ...dateParams];
 
-//     // ✅ Calculate heatmap data (day vs hour)
-//     const heatmap = {};
-//     const heatDays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+    const [rows] = await pool.query(sql, queryParams);
+
+    // ✅ Calculate heatmap data (day vs hour)
+    const heatmap = {};
+    const heatDays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     
-//     rows.forEach(record => {
-//       if (record.checkIn) {
-//         const checkInDate = new Date(record.checkIn);
-//         const dayIndex = checkInDate.getDay(); // 0 = Sunday, 1 = Monday, etc.
-//         // Convert to Monday = 0 format
-//         const dayIndexAdjusted = dayIndex === 0 ? 6 : dayIndex - 1;
-//         const day = heatDays[dayIndexAdjusted];
-//         const hour = checkInDate.getHours().toString().padStart(2, '0');
+    rows.forEach(record => {
+      if (record.checkIn) {
+        const checkInDate = new Date(record.checkIn);
+        const dayIndex = checkInDate.getDay(); // 0 = Sunday, 1 = Monday, etc.
+        // Convert to Monday = 0 format
+        const dayIndexAdjusted = dayIndex === 0 ? 6 : dayIndex - 1;
+        const day = heatDays[dayIndexAdjusted];
+        const hour = checkInDate.getHours().toString().padStart(2, '0');
         
-//         if (!heatmap[day]) {
-//           heatmap[day] = {};
-//         }
-//         if (!heatmap[day][hour]) {
-//           heatmap[day][hour] = 0;
-//         }
-//         heatmap[day][hour] += 1;
-//       }
-//     });
+        if (!heatmap[day]) {
+          heatmap[day] = {};
+        }
+        if (!heatmap[day][hour]) {
+          heatmap[day][hour] = 0;
+        }
+        heatmap[day][hour] += 1;
+      }
+    });
 
-//     // ✅ Calculate staff compliance (only for staff records)
-//     const staffRecords = rows.filter(r => r.type === 'Staff');
-//     const staffMap = {};
+    // ✅ Calculate staff compliance (only for staff records)
+    const staffRecords = rows.filter(r => r.type === 'Staff');
+    const staffMap = {};
     
-//     staffRecords.forEach(record => {
-//       if (!staffMap[record.name]) {
-//         staffMap[record.name] = {
-//           name: record.name,
-//           role: record.role,
-//           shift: record.shift || 'Straight',
-//           scheduledHrs: 48, // Default weekly hours
-//           presentHrs: 0,
-//           checkIns: 0
-//         };
-//       }
+    staffRecords.forEach(record => {
+      if (!staffMap[record.name]) {
+        staffMap[record.name] = {
+          name: record.name,
+          role: record.role,
+          shift: record.shift || 'Straight',
+          scheduledHrs: 48, // Default weekly hours
+          presentHrs: 0,
+          checkIns: 0
+        };
+      }
       
-//       if (record.checkIn && record.checkOut) {
-//         const diffMs = new Date(record.checkOut) - new Date(record.checkIn);
-//         const hours = diffMs / (1000 * 60 * 60);
-//         staffMap[record.name].presentHrs += hours;
-//         staffMap[record.name].checkIns += 1;
-//       }
-//     });
+      if (record.checkIn && record.checkOut) {
+        const diffMs = new Date(record.checkOut) - new Date(record.checkIn);
+        const hours = diffMs / (1000 * 60 * 60);
+        staffMap[record.name].presentHrs += hours;
+        staffMap[record.name].checkIns += 1;
+      }
+    });
 
-//     const staffTable = Object.values(staffMap).map(staff => ({
-//       name: staff.name,
-//       role: staff.role,
-//       shift: staff.shift,
-//       scheduledHrs: staff.scheduledHrs,
-//       presentHrs: Number(staff.presentHrs.toFixed(1)),
-//       ot: Math.max(0, staff.presentHrs - staff.scheduledHrs),
-//       compliance: staff.scheduledHrs > 0 
-//         ? Math.round((staff.presentHrs / staff.scheduledHrs) * 100)
-//         : 0
-//     }));
+    const staffTable = Object.values(staffMap).map(staff => ({
+      name: staff.name,
+      role: staff.role,
+      shift: staff.shift,
+      scheduledHrs: staff.scheduledHrs,
+      presentHrs: Number(staff.presentHrs.toFixed(1)),
+      ot: Math.max(0, staff.presentHrs - staff.scheduledHrs),
+      compliance: staff.scheduledHrs > 0 
+        ? Math.round((staff.presentHrs / staff.scheduledHrs) * 100)
+        : 0
+    }));
 
-//     // ✅ Calculate overall compliance
-//     const totalScheduled = staffTable.reduce((sum, s) => sum + s.scheduledHrs, 0);
-//     const totalPresent = staffTable.reduce((sum, s) => sum + s.presentHrs, 0);
-//     const overallCompliance = totalScheduled > 0 
-//       ? Math.round((totalPresent / totalScheduled) * 100)
-//       : 0;
+    // ✅ Calculate overall compliance
+    const totalScheduled = staffTable.reduce((sum, s) => sum + s.scheduledHrs, 0);
+    const totalPresent = staffTable.reduce((sum, s) => sum + s.presentHrs, 0);
+    const overallCompliance = totalScheduled > 0 
+      ? Math.round((totalPresent / totalScheduled) * 100)
+      : 0;
 
-//     res.json({
-//       success: true,
-//       attendance: rows,
-//       heatmap: heatmap,
-//       overallCompliance: overallCompliance,
-//       table: staffTable
-//     });
-//   } catch (err) {
-//     next(err);
-//   }
-// };
+    res.json({
+      success: true,
+      attendance: rows,
+      heatmap: heatmap,
+      overallCompliance: overallCompliance,
+      table: staffTable
+    });
+  } catch (err) {
+    next(err);
+  }
+};
 
 export const getMemberAttendanceByAdmin = async (req, res, next) => {
   try {
@@ -905,5 +905,3 @@ export const getStaffAttendanceByAdmin = async (req, res, next) => {
     next(err);
   }
 };
-
-
