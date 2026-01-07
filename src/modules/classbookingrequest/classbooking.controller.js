@@ -1578,14 +1578,22 @@ export const getUnifiedBookingsByBranch = async (req, res) => {
         b.bookingType,
         b.bookingStatus,
         b.paymentStatus,
-        b.price,
+        
+        CASE 
+          WHEN b.price > 0 THEN b.price
+          WHEN mp_group.id IS NOT NULL THEN mp_group.price
+          WHEN c.id IS NOT NULL THEN c.price
+          WHEN mp.id IS NOT NULL THEN mp.price
+          ELSE 0
+        END AS price,
+
         b.notes,
         b.branchId,
 
         um.fullName AS memberName,
         ut.fullName AS trainerName,
-        COALESCE(s.sessionName, mp.name) AS sessionName,
-        c.className
+        COALESCE(s.sessionName, mp.name, mp_group.name) AS sessionName,
+        COALESCE(c.className, mp_group.name) AS className
 
       FROM unified_bookings b
       LEFT JOIN member m ON m.id = b.memberId
@@ -1593,6 +1601,7 @@ export const getUnifiedBookingsByBranch = async (req, res) => {
       LEFT JOIN user ut ON ut.id = b.trainerId
       LEFT JOIN session s ON s.id = b.sessionId
       LEFT JOIN memberplan mp ON mp.id = b.sessionId 
+      LEFT JOIN memberplan mp_group ON mp_group.id = b.classId
       LEFT JOIN classschedule c ON c.id = b.classId
 
       WHERE m.adminId = ?
@@ -2193,12 +2202,20 @@ export const getUnifiedBookingsByMember = async (req, res) => {
       SELECT 
         b.*,
         ut.fullName AS trainerName,
-        COALESCE(s.sessionName, mp.name) AS sessionName,
-        c.className
+        COALESCE(s.sessionName, mp.name, mp_group.name) AS sessionName,
+        COALESCE(c.className, mp_group.name) AS className,
+        CASE 
+          WHEN b.price > 0 THEN b.price
+          WHEN mp_group.id IS NOT NULL THEN mp_group.price
+          WHEN c.id IS NOT NULL THEN c.price
+          WHEN mp.id IS NOT NULL THEN mp.price
+          ELSE 0
+        END AS price
       FROM unified_bookings b
       LEFT JOIN user ut ON ut.id = b.trainerId
       LEFT JOIN session s ON s.id = b.sessionId
       LEFT JOIN memberplan mp ON mp.id = b.sessionId
+      LEFT JOIN memberplan mp_group ON mp_group.id = b.classId
       LEFT JOIN classschedule c ON c.id = b.classId
       WHERE b.memberId = ?
       ORDER BY b.date DESC

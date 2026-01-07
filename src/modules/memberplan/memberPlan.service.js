@@ -6,6 +6,7 @@ export const saveMemberPlan = async (payload) => {
   const sessions = Number(payload.sessions ?? 0);
   const validityDays = Number(payload.validityDays ?? payload.validity ?? 0);
   const price = Number(payload.price ?? 0);
+
   const type = payload.type || null;
   const adminId = payload.adminId;
   const branchId = payload.branchId ?? null;
@@ -62,6 +63,7 @@ export const getMemberPlansByAdminIdService = async (adminId) => {
       sessions,
       validityDays,
       price,
+
       type,
       trainerId,
       trainerType,
@@ -123,6 +125,7 @@ export const updateMemberPlan = async (planId, payload, adminId) => {
     sessions: "sessions",
     validity: "validityDays",
     price: "price",
+
     branchId: "branchId",
     trainerId: "trainerId",
     trainerType: "trainerType",
@@ -192,4 +195,3 @@ export const getAllMemberPlansService = async () => {
 
   return rows;
 };
-  

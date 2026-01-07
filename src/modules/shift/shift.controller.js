@@ -23,6 +23,7 @@ export const createShift = async (req, res) => {
       shiftType,
       description
     } = req.body;
+    
 
     /* REQUIRED VALIDATIONS (branchId REMOVED) */
     if (!staffIds || !shiftDate || !startTime || !endTime || !shiftType) {
@@ -32,26 +33,37 @@ export const createShift = async (req, res) => {
       });
     }
 
-    /* STAFF IDS */
+
+    /* STAFF IDS VALIDATION */
+    let staffIdArray = [];
     if (Array.isArray(staffIds)) {
-      staffIds = staffIds.join(",");
+      staffIdArray = staffIds;
+    } else if (staffIds) {
+      // Handle comma-separated string or single value
+      staffIdArray = String(staffIds).split(',').map(id => id.trim());
     }
 
-    const shift = await createShiftService({
-      staffIds,
-      branchId,              // ✅ can be null
-      shiftDate,
-      startTime,
-      endTime,
-      shiftType,
-      description,
-      createdById
-    });
+    const createdShifts = [];
+
+    // Create a shift for each staff member individually
+    for (const singleStaffId of staffIdArray) {
+      const shift = await createShiftService({
+        staffIds: singleStaffId, // Store single ID per record
+        branchId,
+        shiftDate,
+        startTime,
+        endTime,
+        shiftType,
+        description,
+        createdById
+      });
+      createdShifts.push(shift);
+    }
 
     return res.status(201).json({
       success: true,
-      message: "Shift created successfully!",
-      data: shift
+      message: "Shifts created successfully!",
+      data: createdShifts
     });
 
   } catch (error) {
@@ -62,7 +74,7 @@ export const createShift = async (req, res) => {
   }
 };
 
-export const getAllShifts = async (req, res) => { 
+export const getAllShifts = async (req, res) => {
   try {
     const adminId = Number(req.params.adminId);
 

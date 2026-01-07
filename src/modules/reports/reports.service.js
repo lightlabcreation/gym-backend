@@ -391,10 +391,26 @@ export const generateMemberReportService = async (adminId) => {
   }
 };
 
-export const generateGeneralTrainerReportService = async (adminId) => {
+export const generateGeneralTrainerReportService = async (
+  adminId,
+  fromDate = null,
+  toDate = null
+) => {
   try {
-    // 1️⃣ Total Bookings: Count of General Trainer plans assigned
-    // General Trainer plans: type = 'GROUP' OR (type = 'MEMBER' AND trainerType = 'general')
+    /* ===============================
+       DATE FILTER CONDITION
+    =============================== */
+    let dateFilter = "";
+    const dateParams = [];
+
+    if (fromDate && toDate) {
+      dateFilter = " AND DATE(mpa.assignedAt) BETWEEN ? AND ?";
+      dateParams.push(fromDate, toDate);
+    }
+
+    /* ===============================
+       1️⃣ TOTAL BOOKINGS + REVENUE
+    =============================== */
     const [[planStats]] = await pool.query(
       `SELECT 
         COUNT(*) AS totalBookings,
@@ -411,21 +427,35 @@ export const generateGeneralTrainerReportService = async (adminId) => {
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
-        AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))`,
-      [adminId]
+        AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))
+        ${dateFilter}`,
+      [adminId, ...dateParams]
     );
 
-    // 2️⃣ Booked: Count of bookings from dynamic page (unified_bookings where bookingType = 'GROUP')
+    /* ===============================
+       2️⃣ BOOKED (GROUP BOOKINGS)
+    =============================== */
+    let bookingDateFilter = "";
+    const bookingDateParams = [];
+
+    if (fromDate && toDate) {
+      bookingDateFilter = " AND DATE(ub.createdAt) BETWEEN ? AND ?";
+      bookingDateParams.push(fromDate, toDate);
+    }
+
     const [[bookedStats]] = await pool.query(
       `SELECT COUNT(*) AS booked
-      FROM unified_bookings ub
-      INNER JOIN member m ON ub.memberId = m.id
-      WHERE m.adminId = ? 
-        AND ub.bookingType = 'GROUP'`,
-      [adminId]
+       FROM unified_bookings ub
+       INNER JOIN member m ON ub.memberId = m.id
+       WHERE m.adminId = ?
+         AND ub.bookingType = 'GROUP'
+         ${bookingDateFilter}`,
+      [adminId, ...bookingDateParams]
     );
 
-    // 3️⃣ Bookings by Day: General Trainer plan assignments per day (with revenue)
+    /* ===============================
+       3️⃣ BOOKINGS BY DAY
+    =============================== */
     const [bookingsByDay] = await pool.query(
       `SELECT 
         DATE(mpa.assignedAt) AS date,
@@ -436,17 +466,19 @@ export const generateGeneralTrainerReportService = async (adminId) => {
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
         AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))
+        ${dateFilter}
       GROUP BY DATE(mpa.assignedAt)
       ORDER BY date ASC`,
-      [adminId]
+      [adminId, ...dateParams]
     );
 
-    // 4️⃣ Booking Status: Active and Inactive General Trainer plans
+    /* ===============================
+       4️⃣ BOOKING STATUS
+    =============================== */
     const [bookingStatus] = await pool.query(
       `SELECT 
         CASE
           WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
-          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
           ELSE 'Inactive'
         END AS bookingStatus,
         COUNT(*) AS count
@@ -455,16 +487,14 @@ export const generateGeneralTrainerReportService = async (adminId) => {
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
         AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))
-      GROUP BY 
-        CASE
-          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
-          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
-          ELSE 'Inactive'
-        END`,
-      [adminId]
+        ${dateFilter}
+      GROUP BY bookingStatus`,
+      [adminId, ...dateParams]
     );
 
-    // 5️⃣ Transactions list for UI
+    /* ===============================
+       5️⃣ TRANSACTIONS (LIMIT 100)
+    =============================== */
     const [transactions] = await pool.query(
       `SELECT 
         DATE(mpa.assignedAt) AS date,
@@ -475,11 +505,11 @@ export const generateGeneralTrainerReportService = async (adminId) => {
         mp.sessions AS totalClasses,
         mpa.amountPaid AS price,
         mpa.paymentMode,
-        mpa.status AS originalStatus,
         mpa.membershipTo,
+        mp.trainerId,
+        TIME(mpa.assignedAt) AS time,
         CASE
           WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
-          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
           ELSE 'Inactive'
         END AS computedStatus,
         COALESCE(
@@ -487,111 +517,49 @@ export const generateGeneralTrainerReportService = async (adminId) => {
           'System'
         ) AS assignedBy,
         COALESCE(
-          (SELECT u.fullName FROM user u 
+          (SELECT u.fullName 
+           FROM user u 
            INNER JOIN staff s ON s.userId = u.id 
            WHERE s.id = mp.trainerId),
           'N/A'
-        ) AS trainerName,
-        mp.trainerId,
-        TIME(mpa.assignedAt) AS time,
-        -- Booking statistics for General Trainer plans
-        -- Note: unified_bookings doesn't have planId, so we count all GROUP bookings for the member
-        COALESCE((
-          SELECT COUNT(*) 
-          FROM unified_bookings ub 
-          WHERE ub.memberId = m.id 
-            AND ub.bookingType = 'GROUP'
-        ), 0) AS classesBooked,
-        COALESCE((
-          SELECT COUNT(*) 
-          FROM unified_bookings ub 
-          WHERE ub.memberId = m.id 
-            AND ub.bookingStatus = 'Confirmed'
-            AND ub.bookingType = 'GROUP'
-        ), 0) AS classesConfirmed,
-        COALESCE((
-          SELECT COUNT(*) 
-          FROM unified_bookings ub 
-          WHERE ub.memberId = m.id 
-            AND ub.bookingStatus = 'Cancelled'
-            AND ub.bookingType = 'GROUP'
-        ), 0) AS classesCancelled,
-        COALESCE((
-          SELECT COUNT(*) 
-          FROM unified_bookings ub 
-          WHERE ub.memberId = m.id 
-            AND ub.bookingStatus = 'Completed'
-            AND ub.bookingType = 'GROUP'
-        ), 0) AS classesCompleted
+        ) AS trainerName
       FROM member_plan_assignment mpa
       INNER JOIN member m ON mpa.memberId = m.id
       INNER JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ?
         AND (mp.type = 'GROUP' OR (mp.type = 'MEMBER' AND mp.trainerType = 'general'))
+        ${dateFilter}
       ORDER BY mpa.assignedAt DESC
       LIMIT 100`,
-      [adminId]
+      [adminId, ...dateParams]
     );
 
-    // Format output for UI
+    /* ===============================
+       FINAL RESPONSE
+    =============================== */
     const formattedStats = {
       totalBookings: planStats.totalBookings || 0,
-      totalRevenue: parseFloat(planStats.totalRevenue) || 0,
+      totalRevenue: Number(planStats.totalRevenue) || 0,
       confirmed: planStats.confirmed || 0,
       cancelled: planStats.cancelled || 0,
       booked: bookedStats.booked || 0,
       avgTicket:
         planStats.totalBookings > 0
-          ? parseFloat(planStats.totalRevenue) / planStats.totalBookings
+          ? Number(planStats.totalRevenue) / planStats.totalBookings
           : 0,
     };
-
-    // Format transactions data
-    const formattedTransactions = transactions.map((transaction) => {
-      // Format time to HH:MM if it exists
-      let formattedTime = "-";
-      if (transaction.time) {
-        const timeStr = String(transaction.time);
-        if (timeStr.includes(":")) {
-          formattedTime = timeStr.substring(0, 5);
-        } else {
-          formattedTime = timeStr;
-        }
-      }
-
-      return {
-        date: transaction.date,
-        memberId: transaction.memberId,
-        memberName: transaction.username || "N/A",
-        planId: transaction.planId,
-        planName: transaction.planName || "Group Training Plan",
-        trainer: transaction.trainerName || "N/A",
-        trainerId: transaction.trainerId,
-        planPrice: parseFloat(transaction.price) || 0,
-        totalClasses: transaction.totalClasses || 0,
-        classesBooked: transaction.classesBooked || 0,
-        classesConfirmed: transaction.classesConfirmed || 0,
-        classesCancelled: transaction.classesCancelled || 0,
-        classesCompleted: transaction.classesCompleted || 0,
-        paymentMode: transaction.paymentMode || "N/A",
-        time: formattedTime,
-        status: transaction.computedStatus || "Inactive",
-        revenue: parseFloat(transaction.price) || 0,
-      };
-    });
 
     return {
       stats: formattedStats,
       bookingsByDay,
       bookingStatus,
-      transactions: formattedTransactions,
+      transactions,
     };
   } catch (error) {
-    throw new Error(
-      `Error generating general trainer report: ${error.message}`
-    );
+    throw new Error(`Error generating general trainer report: ${error.message}`);
   }
 };
+
 
 // export const generatePersonalTrainerReportService = async (adminId) => {
 
@@ -2329,36 +2297,25 @@ export const generateGeneralTrainerReportByStaffService = async (
   toDate = null
 ) => {
   try {
-    console.log(
-      "General Trainer By Staff - adminId:",
-      adminId,
-      "staffId:",
-      staffId,
-      "fromDate:",
-      fromDate,
-      "toDate:",
-      toDate
-    );
-
-    // 1️⃣ Verify the staff belongs to the admin
-    const [staffVerification] = await pool.query(
-      `SELECT s.id, s.userId, u.fullName 
+    /* ===============================
+       1️⃣ VERIFY STAFF
+    =============================== */
+    const [[staff]] = await pool.query(
+      `SELECT s.id, s.userId
        FROM staff s
-       JOIN user u ON s.userId = u.id
        WHERE s.id = ? AND s.adminId = ?`,
       [staffId, adminId]
     );
 
-    if (staffVerification.length === 0) {
-      console.log("Staff verification failed - no staff found");
+    if (!staff) {
       return {
         stats: {
           totalBookings: 0,
           totalRevenue: 0,
-          avgTicket: 0,
           confirmed: 0,
           cancelled: 0,
           booked: 0,
+          avgTicket: 0,
         },
         bookingsByDay: [],
         bookingStatus: [],
@@ -2366,344 +2323,176 @@ export const generateGeneralTrainerReportByStaffService = async (
       };
     }
 
-    // Get the userId of the staff member to use as trainerId
-    const staffUserId = staffVerification[0].userId;
-    console.log(
-      "Staff verified - userId:",
-      staffUserId,
-      "fullName:",
-      staffVerification[0].fullName
-    );
+    const trainerUserId = staff.userId;
 
-    // Helper function to build the date filter part of the query for plan assignments
-    // Only apply date filter if both dates are provided and they are different
-    const getDateFilterQueryForPlans = () => {
-      if (fromDate && toDate && fromDate !== toDate) {
-        return `AND DATE(mpa.assignedAt) BETWEEN ? AND ?`;
-      }
-      // If dates are same (today) or not provided, don't filter (show all data)
-      return "";
-    };
+    /* ===============================
+       2️⃣ DATE FILTER
+    =============================== */
+    let dateFilter = "";
+    let bookingDateFilter = "";
+    const dateParams = [];
 
-    // Helper function to build the date filter part of the query for bookings
-    const getDateFilterQueryForBookings = () => {
-      if (fromDate && toDate && fromDate !== toDate) {
-        return `AND ub.date BETWEEN ? AND ?`;
-      }
-      // If dates are same (today) or not provided, don't filter (show all data)
-      return "";
-    };
+    if (fromDate && toDate) {
+      dateFilter = ` AND DATE(mpa.assignedAt) BETWEEN ? AND ? `;
+      bookingDateFilter = ` AND DATE(ub.createdAt) BETWEEN ? AND ? `;
+      dateParams.push(fromDate, toDate);
+    }
 
-    // Helper function to build the parameters array for the date filter
-    const getDateFilterParams = () => {
-      const params = [];
-      // Only add params if both dates are provided and different
-      if (fromDate && toDate && fromDate !== toDate) {
-        params.push(fromDate);
-        params.push(toDate);
-      }
-      return params;
-    };
-
-    const dateFilterQueryForPlans = getDateFilterQueryForPlans();
-    const dateFilterQueryForBookings = getDateFilterQueryForBookings();
-    const dateFilterParams = getDateFilterParams();
-
-    // 2️⃣ Total Bookings: Count of General Trainer plans assigned to this trainer
-    // For GROUP plans: Show plans for members who have GROUP bookings with this trainer OR plans with trainerId
-    // For MEMBER type with trainerType='general': Show plans where trainerId = staffId
-    const queryParams = [
-      adminId,
-      staffId,
-      staffId,
-      staffUserId,
-      ...dateFilterParams,
-    ];
-    console.log("Plan Stats Query Params:", queryParams);
-
+    /* ===============================
+       3️⃣ TOTAL BOOKINGS + REVENUE
+    =============================== */
     const [[planStats]] = await pool.query(
       `SELECT 
         COUNT(*) AS totalBookings,
-        COALESCE(SUM(mpa.amountPaid), 0) AS totalRevenue,
+        COALESCE(SUM(mpa.amountPaid),0) AS totalRevenue,
         SUM(CASE 
-          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 1 
-          ELSE 0 
-        END) AS confirmed,
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status='Active' THEN 1 
+          ELSE 0 END) AS confirmed,
         SUM(CASE 
-          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 1 
-          ELSE 0 
-        END) AS cancelled
+          WHEN mpa.membershipTo < CURDATE() OR mpa.status='Inactive' THEN 1 
+          ELSE 0 END) AS cancelled
       FROM member_plan_assignment mpa
-      INNER JOIN member m ON mpa.memberId = m.id
-      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      JOIN member m ON m.id = mpa.memberId
+      JOIN memberplan mp ON mp.id = mpa.planId
       WHERE m.adminId = ?
         AND (
-          -- Case 1: MEMBER type with trainerType='general' - filter by trainerId in plan
-          (mp.type = 'MEMBER' AND mp.trainerType = 'general' AND mp.trainerId = ?)
+          (mp.type='GROUP' AND mp.trainerId = ?)
           OR
-          -- Case 2: GROUP type plans where trainerId matches (if plan has trainerId)
-          (mp.type = 'GROUP' AND mp.trainerId = ?)
-          OR
-          -- Case 3: GROUP type plans for members who have GROUP bookings with this trainer
-          (mp.type = 'GROUP' AND EXISTS (
-            SELECT 1 FROM unified_bookings ub 
-            WHERE ub.memberId = m.id 
-            AND ub.trainerId = ?
-            AND ub.bookingType = 'GROUP'
-          ))
+          (mp.type='MEMBER' AND mp.trainerType='general' AND mp.trainerId = ?)
         )
-        ${dateFilterQueryForPlans}`,
-      [adminId, staffId, staffId, staffUserId, ...dateFilterParams]
+        ${dateFilter}`,
+      [adminId, trainerUserId, trainerUserId, ...dateParams]
     );
 
-    console.log("Plan Stats Result:", planStats);
-
-    // 3️⃣ Booked: Count of GROUP bookings for this trainer
-    const bookedQueryParams = [adminId, staffUserId, ...dateFilterParams];
-    console.log("Booked Stats Query Params:", bookedQueryParams);
-
+    /* ===============================
+       4️⃣ BOOKED (GROUP BOOKINGS)
+    =============================== */
     const [[bookedStats]] = await pool.query(
       `SELECT COUNT(*) AS booked
-      FROM unified_bookings ub
-      INNER JOIN member m ON ub.memberId = m.id
-      WHERE m.adminId = ? 
-        AND ub.trainerId = ?
-        AND ub.bookingType = 'GROUP'
-        ${dateFilterQueryForBookings}`,
-      bookedQueryParams
+       FROM unified_bookings ub
+       JOIN member m ON m.id = ub.memberId
+       WHERE m.adminId = ?
+         AND ub.bookingType = 'GROUP'
+         AND ub.trainerId = ?
+         ${bookingDateFilter}`,
+      [adminId, trainerUserId, ...dateParams]
     );
 
-    console.log("Booked Stats Result:", bookedStats);
-
-    // 4️⃣ Bookings by Day: General Trainer plan assignments per day (with revenue)
+    /* ===============================
+       5️⃣ BOOKINGS BY DAY
+    =============================== */
     const [bookingsByDay] = await pool.query(
       `SELECT 
         DATE(mpa.assignedAt) AS date,
         COUNT(*) AS count,
-        COALESCE(SUM(mpa.amountPaid), 0) AS revenue
+        COALESCE(SUM(mpa.amountPaid),0) AS revenue
       FROM member_plan_assignment mpa
-      INNER JOIN member m ON mpa.memberId = m.id
-      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      JOIN member m ON m.id = mpa.memberId
+      JOIN memberplan mp ON mp.id = mpa.planId
       WHERE m.adminId = ?
         AND (
-          -- Case 1: MEMBER type with trainerType='general' - filter by trainerId in plan
-          (mp.type = 'MEMBER' AND mp.trainerType = 'general' AND mp.trainerId = ?)
+          (mp.type='GROUP' AND mp.trainerId = ?)
           OR
-          -- Case 2: GROUP type plans where trainerId matches (if plan has trainerId)
-          (mp.type = 'GROUP' AND mp.trainerId = ?)
-          OR
-          -- Case 3: GROUP type plans for members who have GROUP bookings with this trainer
-          (mp.type = 'GROUP' AND EXISTS (
-            SELECT 1 FROM unified_bookings ub 
-            WHERE ub.memberId = m.id 
-            AND ub.trainerId = ?
-            AND ub.bookingType = 'GROUP'
-          ))
+          (mp.type='MEMBER' AND mp.trainerType='general' AND mp.trainerId = ?)
         )
-        ${dateFilterQueryForPlans}
+        ${dateFilter}
       GROUP BY DATE(mpa.assignedAt)
       ORDER BY date ASC`,
-      [adminId, staffId, staffId, staffUserId, ...dateFilterParams]
+      [adminId, trainerUserId, trainerUserId, ...dateParams]
     );
 
-    // 5️⃣ Booking Status: Active and Inactive General Trainer plans
+    /* ===============================
+       6️⃣ BOOKING STATUS
+    =============================== */
     const [bookingStatus] = await pool.query(
       `SELECT 
         CASE
-          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
-          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status='Active'
+          THEN 'Active'
           ELSE 'Inactive'
         END AS bookingStatus,
         COUNT(*) AS count
       FROM member_plan_assignment mpa
-      INNER JOIN member m ON mpa.memberId = m.id
-      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      JOIN member m ON m.id = mpa.memberId
+      JOIN memberplan mp ON mp.id = mpa.planId
       WHERE m.adminId = ?
         AND (
-          -- Case 1: MEMBER type with trainerType='general' - filter by trainerId in plan
-          (mp.type = 'MEMBER' AND mp.trainerType = 'general' AND mp.trainerId = ?)
+          (mp.type='GROUP' AND mp.trainerId = ?)
           OR
-          -- Case 2: GROUP type plans where trainerId matches (if plan has trainerId)
-          (mp.type = 'GROUP' AND mp.trainerId = ?)
-          OR
-          -- Case 3: GROUP type plans for members who have GROUP bookings with this trainer
-          (mp.type = 'GROUP' AND EXISTS (
-            SELECT 1 FROM unified_bookings ub 
-            WHERE ub.memberId = m.id 
-            AND ub.trainerId = ?
-            AND ub.bookingType = 'GROUP'
-          ))
+          (mp.type='MEMBER' AND mp.trainerType='general' AND mp.trainerId = ?)
         )
-        ${dateFilterQueryForPlans}
-      GROUP BY 
-        CASE
-          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
-          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
-          ELSE 'Inactive'
-        END`,
-      [adminId, staffId, staffId, staffUserId, ...dateFilterParams]
+        ${dateFilter}
+      GROUP BY bookingStatus`,
+      [adminId, trainerUserId, trainerUserId, ...dateParams]
     );
 
-    // 6️⃣ Transactions: All members with general trainer plans assigned to this trainer
-    // Parameters: [staffUserId (for trainerName), staffUserId (4x for booking stats), adminId, staffId (for MEMBER), staffId (for GROUP trainerId), staffUserId (for EXISTS), ...dateFilterParams]
-    const transactionQueryParams = [
-      staffUserId,
-      staffUserId,
-      staffUserId,
-      staffUserId,
-      staffUserId,
-      adminId,
-      staffId,
-      staffId,
-      staffUserId,
-      ...dateFilterParams,
-    ];
-    console.log("Transactions Query Params:", transactionQueryParams);
-    console.log("Date Filter Query For Plans:", dateFilterQueryForPlans);
-
+    /* ===============================
+       7️⃣ TRANSACTIONS
+    =============================== */
     const [transactions] = await pool.query(
       `SELECT 
         DATE(mpa.assignedAt) AS date,
         m.id AS memberId,
-        m.fullName AS username,
+        m.fullName AS memberName,
         mp.id AS planId,
         mp.name AS planName,
         mp.sessions AS totalClasses,
-        mpa.amountPaid AS price,
+        mpa.amountPaid AS planPrice,
         mpa.paymentMode,
-        mpa.status AS originalStatus,
-        mpa.membershipTo,
-        CASE
-          WHEN mpa.membershipTo >= CURDATE() AND mpa.status = 'Active' THEN 'Active'
-          WHEN mpa.membershipTo < CURDATE() OR mpa.status = 'Inactive' THEN 'Inactive'
-          ELSE 'Inactive'
-        END AS computedStatus,
-        COALESCE(
-          (SELECT u.fullName FROM user u WHERE u.id = mpa.assignedBy),
-          'System'
-        ) AS assignedBy,
-        COALESCE(
-          (SELECT u.fullName FROM user u 
-           INNER JOIN staff s ON s.userId = u.id 
-           WHERE s.id = mp.trainerId),
-          (SELECT u.fullName FROM user u WHERE u.id = ?),
-          'N/A'
-        ) AS trainerName,
-        mp.trainerId,
         TIME(mpa.assignedAt) AS time,
-        -- Booking statistics for General Trainer plans
-        COALESCE((
+        CASE
+          WHEN mpa.membershipTo >= CURDATE() AND mpa.status='Active'
+          THEN 'Active'
+          ELSE 'Inactive'
+        END AS status,
+        (
           SELECT COUNT(*) 
-          FROM unified_bookings ub 
-          WHERE ub.memberId = m.id 
+          FROM unified_bookings ub
+          WHERE ub.memberId = m.id
             AND ub.trainerId = ?
-            AND ub.bookingType = 'GROUP'
-        ), 0) AS classesBooked,
-        COALESCE((
-          SELECT COUNT(*) 
-          FROM unified_bookings ub 
-          WHERE ub.memberId = m.id 
-            AND ub.trainerId = ?
-            AND ub.bookingStatus = 'Confirmed'
-            AND ub.bookingType = 'GROUP'
-        ), 0) AS classesConfirmed,
-        COALESCE((
-          SELECT COUNT(*) 
-          FROM unified_bookings ub 
-          WHERE ub.memberId = m.id 
-            AND ub.trainerId = ?
-            AND ub.bookingStatus = 'Cancelled'
-            AND ub.bookingType = 'GROUP'
-        ), 0) AS classesCancelled,
-        COALESCE((
-          SELECT COUNT(*) 
-          FROM unified_bookings ub 
-          WHERE ub.memberId = m.id 
-            AND ub.trainerId = ?
-            AND ub.bookingStatus = 'Completed'
-            AND ub.bookingType = 'GROUP'
-        ), 0) AS classesCompleted
+            AND ub.bookingType='GROUP'
+            ${bookingDateFilter}
+        ) AS classesBooked
       FROM member_plan_assignment mpa
-      INNER JOIN member m ON mpa.memberId = m.id
-      INNER JOIN memberplan mp ON mpa.planId = mp.id
+      JOIN member m ON m.id = mpa.memberId
+      JOIN memberplan mp ON mp.id = mpa.planId
       WHERE m.adminId = ?
         AND (
-          -- Case 1: MEMBER type with trainerType='general' - filter by trainerId in plan
-          (mp.type = 'MEMBER' AND mp.trainerType = 'general' AND mp.trainerId = ?)
+          (mp.type='GROUP' AND mp.trainerId = ?)
           OR
-          -- Case 2: GROUP type plans where trainerId matches (if plan has trainerId)
-          (mp.type = 'GROUP' AND mp.trainerId = ?)
-          OR
-          -- Case 3: GROUP type plans for members who have GROUP bookings with this trainer
-          (mp.type = 'GROUP' AND EXISTS (
-            SELECT 1 FROM unified_bookings ub 
-            WHERE ub.memberId = m.id 
-            AND ub.trainerId = ?
-            AND ub.bookingType = 'GROUP'
-          ))
+          (mp.type='MEMBER' AND mp.trainerType='general' AND mp.trainerId = ?)
         )
-        ${dateFilterQueryForPlans}
+        ${dateFilter}
       ORDER BY mpa.assignedAt DESC
       LIMIT 100`,
-      transactionQueryParams
+      [
+        trainerUserId,
+        ...dateParams,
+        adminId,
+        trainerUserId,
+        trainerUserId,
+        ...dateParams,
+      ]
     );
 
-    console.log("Transactions Result Count:", transactions.length);
-
-    // Format output for UI
-    const formattedStats = {
-      totalBookings: planStats.totalBookings || 0,
-      totalRevenue: parseFloat(planStats.totalRevenue) || 0,
-      confirmed: planStats.confirmed || 0,
-      cancelled: planStats.cancelled || 0,
-      booked: bookedStats.booked || 0,
-      avgTicket:
-        planStats.totalBookings > 0
-          ? parseFloat(planStats.totalRevenue) / planStats.totalBookings
-          : 0,
-    };
-
-    console.log("Formatted Stats:", formattedStats);
-
-    // Format transactions data
-    const formattedTransactions = transactions.map((transaction) => {
-      // Format time to HH:MM if it exists
-      let formattedTime = "-";
-      if (transaction.time) {
-        const timeStr = String(transaction.time);
-        if (timeStr.includes(":")) {
-          formattedTime = timeStr.substring(0, 5);
-        } else {
-          formattedTime = timeStr;
-        }
-      }
-
-      return {
-        date: transaction.date,
-        memberId: transaction.memberId,
-        memberName: transaction.username || "N/A",
-        planId: transaction.planId,
-        planName: transaction.planName || "Group Training Plan",
-        trainer: transaction.trainerName || "N/A",
-        trainerId: transaction.trainerId,
-        planPrice: parseFloat(transaction.price) || 0,
-        totalClasses: transaction.totalClasses || 0,
-        classesBooked: transaction.classesBooked || 0,
-        classesConfirmed: transaction.classesConfirmed || 0,
-        classesCancelled: transaction.classesCancelled || 0,
-        classesCompleted: transaction.classesCompleted || 0,
-        paymentMode: transaction.paymentMode || "N/A",
-        time: formattedTime,
-        status: transaction.computedStatus || "Inactive",
-        revenue: parseFloat(transaction.price) || 0,
-      };
-    });
-
+    /* ===============================
+       8️⃣ FINAL RESPONSE
+    =============================== */
     return {
-      stats: formattedStats,
+      stats: {
+        totalBookings: planStats.totalBookings || 0,
+        totalRevenue: Number(planStats.totalRevenue) || 0,
+        confirmed: Number(planStats.confirmed) || 0,
+        cancelled: Number(planStats.cancelled) || 0,
+        booked: bookedStats.booked || 0,
+        avgTicket:
+          planStats.totalBookings > 0
+            ? planStats.totalRevenue / planStats.totalBookings
+            : 0,
+      },
       bookingsByDay,
       bookingStatus,
-      transactions: formattedTransactions,
+      transactions,
     };
   } catch (error) {
     throw new Error(
@@ -2711,6 +2500,9 @@ export const generateGeneralTrainerReportByStaffService = async (
     );
   }
 };
+
+
+
 
 export const generateAdminHousekeepingReportService = async (
   adminId,

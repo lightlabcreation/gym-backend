@@ -109,16 +109,20 @@ export const generatePersonalTrainerReportController = async (req, res) => {
 
 export const generateGeneralTrainerReportController = async (req, res) => {
   try {
-    const { adminId } = req.query;
+    const { adminId, fromDate, toDate } = req.query;
 
     if (!adminId) {
       return res.status(400).json({
         success: false,
         message: "Admin ID is required",
       });
-    }
+    } 
 
-    const reportData = await generateGeneralTrainerReportService(adminId);
+    const reportData = await generateGeneralTrainerReportService(
+      adminId,
+      fromDate,
+      toDate
+    );
 
     res.status(200).json({
       success: true,
@@ -134,6 +138,7 @@ export const generateGeneralTrainerReportController = async (req, res) => {
     });
   }
 };
+
 
 // import { getReceptionReportService } from "./receptionReport.service.js";
 
@@ -235,8 +240,8 @@ export const generatePersonalTrainerReportByStaffController = async (
       success: false,
       message: error.message,
     });
+  };
   }
-};
 
 export const generateGeneralTrainerReportByStaffController = async (
   req,
@@ -244,9 +249,8 @@ export const generateGeneralTrainerReportByStaffController = async (
 ) => {
   try {
     const { adminId, staffId } = req.params;
-    const { fromDate, toDate } = req.query; // Get dates from query parameters
+    const { fromDate, toDate } = req.query;
 
-    // Validate input
     if (!adminId || !staffId) {
       return res.status(400).json({
         success: false,
@@ -272,6 +276,7 @@ export const generateGeneralTrainerReportByStaffController = async (
     });
   }
 };
+ 
 
 export const getAdminHousekeepingReport = async (req, res) => {
   try {

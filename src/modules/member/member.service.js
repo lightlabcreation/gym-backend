@@ -23,6 +23,8 @@ export const createMemberService = async (data) => {
     address,
     adminId,
     profileImage,
+    discount, // NEW: Discount field
+    tax, // NEW: Tax field
   } = data;
 
   if (!fullName || !email || !password) {
@@ -72,8 +74,8 @@ export const createMemberService = async (data) => {
   const [userResult] = await pool.query(
     `INSERT INTO user 
       (adminId,fullName, email, password, phone, roleId, branchId, address, 
-       description, duration, gymName, planName, price,dateOfBirth ,profileImage,status)
-     VALUES (?,?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL,? ,?,'Active')`,
+       description, duration, gymName, planName, price,dateOfBirth ,profileImage,status, tax)
+     VALUES (?,?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL,? ,?,'Active', ?)`,
     [
       adminId,
       fullName,
@@ -85,6 +87,7 @@ export const createMemberService = async (data) => {
       address || null,
       dateOfBirth ? new Date(dateOfBirth) : null,
       profileImage || null,
+      tax || 0,
     ]
   );
 
@@ -97,8 +100,8 @@ export const createMemberService = async (data) => {
     `INSERT INTO member
       (userId, fullName, email, password, phone, planId, membershipFrom, membershipTo,
        dateOfBirth, paymentMode, amountPaid, branchId, gender, interestedIn, address, 
-       adminId, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active')`,
+       adminId, status, discount)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active', ?)`,
     [
       userId,
       fullName,
@@ -116,6 +119,7 @@ export const createMemberService = async (data) => {
       interestedIn || null,
       address || null,
       adminId || null,
+      discount ? Number(discount) : 0,
     ]
   );
 
@@ -124,10 +128,10 @@ export const createMemberService = async (data) => {
   // ---------------------------------------------------
   // 3️⃣ NEW: INSERT MULTIPLE PLANS INTO member_plan_assignment
   // ---------------------------------------------------
-  
+
   // Ensure planIds is an array of numbers
   let plansToAssign = [];
-  
+
   if (planIds && Array.isArray(planIds) && planIds.length > 0) {
     // Already an array, convert to numbers
     plansToAssign = planIds.map(id => Number(id)).filter(id => !isNaN(id) && id > 0);
@@ -144,7 +148,7 @@ export const createMemberService = async (data) => {
 
   if (plansToAssign.length > 0) {
     const amountPerPlan = amountPaid ? Number(amountPaid) / plansToAssign.length : null;
-    
+
     for (const planIdNum of plansToAssign) {
       const [planRows] = await pool.query(
         "SELECT id, validityDays, price, name FROM memberplan WHERE id = ?",
@@ -418,7 +422,7 @@ export const memberDetailService = async (id) => {
 
   let attended = 0;
 
-  const total = member.planSessions || 0;
+  const total = member.totalSessions || 0;
   if (member.membershipFrom && member.membershipTo) {
     const [[attendance]] = await pool.query(
       `
@@ -635,6 +639,8 @@ export const updateMemberService = async (id, data) => {
     address = existing.address,
     adminId = existing.adminId,
     status = existing.status,
+    discount = existing.discount, // NEW
+    tax, // NEW
     profileImage, // ✅ ONLY FOR USER TABLE
   } = data;
 
@@ -697,7 +703,8 @@ export const updateMemberService = async (id, data) => {
       interestedIn = ?,
       address = ?,
       adminId = ?,
-      status = ?
+      status = ?,
+      discount = ?
      WHERE id = ?`,
     [
       fullName,
@@ -716,6 +723,7 @@ export const updateMemberService = async (id, data) => {
       address,
       adminId,
       status,
+      discount ? Number(discount) : 0,
       id,
     ]
   );
@@ -733,7 +741,8 @@ export const updateMemberService = async (id, data) => {
       branchId = ?,
       address = ?,
       status = ?,
-      profileImage = ?
+      profileImage = ?,
+      tax = ?
      WHERE id = ?`,
     [
       fullName,
@@ -744,6 +753,7 @@ export const updateMemberService = async (id, data) => {
       address,
       status,
       profileImage ?? null,
+      tax ?? existing.tax ?? 0,
       existing.userId,
     ]
   );
@@ -772,11 +782,11 @@ export const updateMemberService = async (id, data) => {
 
     if (Array.isArray(parsedPlanIds) && parsedPlanIds.length > 0) {
       const plansToAssign = parsedPlanIds.map(id => Number(id)).filter(id => !isNaN(id) && id > 0);
-      
+
       // ✅ Use provided startDate, or today's date (not old membershipFrom)
       const startDateForPlans = startDate || new Date();
       const amountPerPlan = amountPaid ? Number(amountPaid) / plansToAssign.length : null;
-      
+
       console.log('📅 Start date for new plans:', startDateForPlans);
 
       for (const planIdNum of plansToAssign) {
@@ -920,17 +930,17 @@ export const getMembersByAdminIdService = async (adminId) => {
     );
 
     member.assignedPlans = plans;
-    
+
     // Calculate member status based on ALL plans
-    const hasActivePlan = plans.some(p => 
+    const hasActivePlan = plans.some(p =>
       p.computedStatus === 'Active' && p.remainingDays > 0
     );
-    
+
     member.status = hasActivePlan ? 'Active' : 'Inactive';
-    
+
     // Get maximum remaining days from all active plans
     const activePlans = plans.filter(p => p.computedStatus === 'Active');
-    member.remainingDays = activePlans.length > 0 
+    member.remainingDays = activePlans.length > 0
       ? Math.max(...activePlans.map(p => p.remainingDays))
       : 0;
   }
@@ -1102,7 +1112,7 @@ export const updateMemberRenewalStatusService = async (
             [assignmentId]
           );
 
-          let startDate = assignment[0]?.membershipTo 
+          let startDate = assignment[0]?.membershipTo
             ? new Date(assignment[0].membershipTo)
             : new Date();
           startDate.setDate(startDate.getDate() + 1); // Next day after expiry

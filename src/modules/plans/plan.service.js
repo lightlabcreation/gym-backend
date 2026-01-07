@@ -56,11 +56,11 @@ export const createPlanService = async (data) => {
   }
 
   const [result] = await pool.query(
-      `INSERT INTO plan (${fields.join(",")}) VALUES (${placeholders.join(
-        ","
-      )})`,
-      values
-    );
+    `INSERT INTO plan (${fields.join(",")}) VALUES (${placeholders.join(
+      ","
+    )})`,
+    values
+  );
 
   return { id: result.insertId, ...data, status: data.status || "ACTIVE" };
 };
@@ -166,7 +166,7 @@ export const getPlansByBranchService = async (branchId) => {
     [branchId]
   );
 
-  return plans;
+  return plans;
 };
 
 

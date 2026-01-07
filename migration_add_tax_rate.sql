@@ -1,0 +1,1 @@
+ALTER TABLE memberplan ADD COLUMN taxRate DECIMAL(5, 2) DEFAULT 0;

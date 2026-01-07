@@ -51,7 +51,7 @@ export const memberCheckIn = async (req, res, next) => {
       memberAdminId = memberRecords[0].adminId;
       // Always use member's branchId from database (most reliable)
       userBranchId = memberRecords[0].branchId || branchId;
-      
+
       // ✅ Validate adminId match - QR code's adminId must match member's adminId
       if (!memberAdminId) {
         return res.status(400).json({
@@ -59,10 +59,10 @@ export const memberCheckIn = async (req, res, next) => {
           message: "Member adminId not found. Member must be added by an admin.",
         });
       }
-      
+
       const qrAdminIdInt = parseInt(qrAdminId);
       const memberAdminIdInt = parseInt(memberAdminId);
-      
+
       if (qrAdminIdInt !== memberAdminIdInt) {
         return res.status(400).json({
           success: false,
@@ -81,7 +81,7 @@ export const memberCheckIn = async (req, res, next) => {
       if (userRecords.length > 0) {
         const user = userRecords[0];
         const roleName = user.roleName?.toUpperCase() || '';
-        
+
         // ❌ Block admin check-in - Admin cannot check-in themselves
         if (roleName === 'ADMIN' || roleName === 'SUPERADMIN') {
           return res.status(403).json({
@@ -89,11 +89,11 @@ export const memberCheckIn = async (req, res, next) => {
             message: "Admin cannot check-in. Only staff (members, receptionists, trainers) can check-in using admin's QR code.",
           });
         }
-        
+
         // For staff (receptionist, trainer, etc.), check their adminId
         // Staff members have adminId in user table
         let staffAdminId = user.adminId;
-        
+
         // If adminId not in user table, check staff table
         if (!staffAdminId) {
           const [staffRecords] = await pool.query(
@@ -104,7 +104,7 @@ export const memberCheckIn = async (req, res, next) => {
             staffAdminId = staffRecords[0].adminId;
           }
         }
-        
+
         // ✅ Validate adminId match for staff
         if (!staffAdminId) {
           return res.status(400).json({
@@ -112,17 +112,17 @@ export const memberCheckIn = async (req, res, next) => {
             message: "Staff adminId not found. Staff must be assigned to an admin.",
           });
         }
-        
+
         const qrAdminIdInt = parseInt(qrAdminId);
         const staffAdminIdInt = parseInt(staffAdminId);
-        
+
         if (qrAdminIdInt !== staffAdminIdInt) {
           return res.status(400).json({
             success: false,
             message: "This QR code belongs to a different admin. You can only scan your admin's QR code.",
           });
         }
-        
+
         // Use user's branchId if not provided
         if (!userBranchId && user.branchId) {
           userBranchId = user.branchId;
@@ -749,29 +749,33 @@ export const getStaffAttendanceByAdmin = async (req, res, next) => {
     }
 
     const sql = `
-      SELECT
-        a.id,
-        DATE(a.checkIn) AS date,
-        a.checkIn,
-        a.checkOut,
-        a.mode,
-        a.status,
-        u.fullName AS name,
-        r.name AS role,
-        sh.shiftType AS shift,
-        'Staff' AS type
-      FROM memberattendance a
-      JOIN user u ON u.id = a.memberId
-      JOIN role r ON r.id = u.roleId
-      LEFT JOIN staff s ON s.userId = u.id
-      LEFT JOIN shifts sh
-        ON sh.staffIds = s.id
-       AND DATE(sh.shiftDate) = DATE(a.checkIn)
-      WHERE u.adminId = ?
-        AND u.roleId IN (5,6,7,8)
-      ${dateFilter}
-      ORDER BY a.checkIn DESC
-    `;
+  SELECT
+    a.id,
+    DATE(a.checkIn) AS date,
+    a.checkIn,
+    a.checkOut,
+    a.mode,
+    a.status,
+    u.fullName AS name,
+    r.name AS role,
+    sh.shiftType AS shift,
+    ROUND(
+      TIMESTAMPDIFF(MINUTE, sh.startTime, sh.endTime) / 60,
+      2
+    ) AS scheduledHrs,
+    'Staff' AS type
+  FROM memberattendance a
+  JOIN user u ON u.id = a.memberId
+  JOIN role r ON r.id = u.roleId
+  LEFT JOIN staff s ON s.userId = u.id
+  LEFT JOIN shifts sh
+    ON sh.staffIds = s.id
+   AND DATE(sh.shiftDate) = DATE(a.checkIn)
+  WHERE u.adminId = ?
+    AND u.roleId IN (5,6,7,8)
+  ${dateFilter}
+  ORDER BY a.checkIn DESC
+`;
 
     const params = [adminId, ...dateParams];
     const [rows] = await pool.query(sql, params);

@@ -17,6 +17,7 @@ export const getInvoiceDataService = async (paymentId) => {
         m.membershipFrom,
         m.membershipTo,
         m.adminId,
+        m.discount AS memberDiscount,
         b.id AS branchId,
         b.name AS branchName,
         b.address AS branchAddress,
@@ -33,12 +34,14 @@ export const getInvoiceDataService = async (paymentId) => {
         u.tax AS adminTax,
         u.phone AS adminPhone,
         u.email AS adminEmail,
-        s.gym_name AS settingsGymName
+        s.gym_name AS settingsGymName,
+        mu.tax AS memberTax
      FROM Payment p
      LEFT JOIN Member m ON m.id = p.memberId
      LEFT JOIN Branch b ON b.id = m.branchId
      LEFT JOIN Plan pl ON pl.id = p.planId
      LEFT JOIN User u ON u.id = m.adminId
+     LEFT JOIN User mu ON mu.id = m.userId
      LEFT JOIN app_settings s ON s.adminId = m.adminId
      WHERE p.id = ?`,
     [paymentId]
@@ -49,22 +52,29 @@ export const getInvoiceDataService = async (paymentId) => {
   }
 
   const payment = rows[0];
-  
-  // Calculate CGST and SGST (split tax 50-50)
-  const taxRate = parseFloat(payment.adminTax || "5");
-  const subtotal = parseFloat(payment.amount || 0);
+
+  // Calculate CGST and SGST based on member's tax rate
+  const taxRate = parseFloat(payment.memberTax || 0);
+  const discount = parseFloat(payment.memberDiscount || 0);
+  const totalPaid = parseFloat(payment.amount || 0);
+
+  // TotalPaid = Base + (Base * taxRate / 100) - Discount
+  // TotalPaid + Discount = Base * (1 + taxRate / 100)
+  // Base = (TotalPaid + Discount) / (1 + taxRate / 100)
+  const subtotal = (totalPaid + discount) / (1 + taxRate / 100);
   const taxAmount = (subtotal * taxRate) / 100;
   const cgstAmount = taxAmount / 2;
   const sgstAmount = taxAmount / 2;
-  const totalAmount = subtotal + taxAmount;
+  const totalAmount = totalPaid;
 
   return {
     ...payment,
-    subtotal,
+    subtotal: Math.round(subtotal),
     taxRate,
-    taxAmount,
-    cgstAmount,
-    sgstAmount,
-    totalAmount
+    taxAmount: Math.round(taxAmount),
+    cgstAmount: Math.round(cgstAmount * 100) / 100,
+    sgstAmount: Math.round(sgstAmount * 100) / 100,
+    totalAmount,
+    discount
   };
 };

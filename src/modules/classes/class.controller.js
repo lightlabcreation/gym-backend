@@ -189,6 +189,9 @@ export const getScheduledClassesWithBookingStatus = async (req, res) => {
   }
 };
 
+
+
+
 export const cancelBooking = async (req, res, next) => {
   try {
     const { memberId, scheduleId } = req.body;

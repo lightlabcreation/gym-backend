@@ -198,7 +198,43 @@ export const bookClassService = async (memberId, scheduleId) => {
 
   const schedule = scheduleRows[0];
 
-  /* 4️⃣ CHECK CAPACITY */
+  /* 4️⃣ CHECK SESSION LIMIT */
+  const [planCheck] = await pool.query(
+    `
+    SELECT 
+      mp.sessions AS totalSessions,
+      mpa.membershipTo,
+      (
+        SELECT COUNT(*)
+        FROM booking b
+        WHERE b.memberId = mpa.memberId
+      ) AS bookedSessions
+    FROM member_plan_assignment mpa
+    JOIN memberplan mp ON mp.id = mpa.planId
+    WHERE mpa.memberId = ?
+      AND mpa.status = 'ACTIVE'
+    ORDER BY mpa.id DESC
+    LIMIT 1
+    `,
+    [realMemberId]
+  );
+
+  if (planCheck.length > 0) {
+    const { totalSessions, bookedSessions, membershipTo } = planCheck[0];
+    const isSessionOver = totalSessions > 0 && bookedSessions >= totalSessions;
+    const isDateOver = membershipTo && new Date() > new Date(membershipTo);
+
+    if (isSessionOver || isDateOver) {
+      const msg = isSessionOver
+        ? `Session Limit Reached! You have used ${bookedSessions}/${totalSessions} sessions.`
+        : "Your plan has expired.";
+      throw { status: 400, message: msg };
+    }
+  } else {
+    throw { status: 400, message: "No active membership plan found." };
+  }
+
+  /* 5️⃣ CHECK CAPACITY */
   const [bookings] = await pool.query(
     "SELECT COUNT(*) AS count FROM booking WHERE scheduleId = ?",
     [scheduleId]
@@ -315,13 +351,139 @@ export const bookClassService = async (memberId, scheduleId) => {
 //   }));
 // };
 
+// export const getScheduledClassesWithBookingStatusService = async (
+//   memberId,
+//   adminId
+// ) => {
+//   /* ================================
+//      1️⃣ check member (OPTIONAL)
+//      ❌ do NOT block if not found
+//   ================================= */
+//   let validMemberId = null;
+
+//   if (memberId) {
+//     const [memberRows] = await pool.query(
+//       `
+//       SELECT id
+//       FROM member
+//       WHERE id = ?
+//         AND adminId = ?
+//         AND status = 'ACTIVE'
+//       `,
+//       [memberId, adminId]
+//     );
+
+//     if (memberRows.length > 0) {
+//       validMemberId = memberId;
+//     }
+//   }
+
+//   /* ================================
+//      2️⃣ fetch schedules by admin
+//      ❌ branch completely removed
+//   ================================= */
+//   const [rows] = await pool.query(
+//     `
+//     SELECT 
+//       cs.id,
+//       cs.className,
+//       cs.date,
+//       cs.day,
+//       cs.startTime,
+//       cs.endTime,
+//       cs.status,
+//       cs.capacity,
+//       cs.price,
+
+//       u.fullName AS trainerName,
+
+//       COUNT(bk2.id) AS membersCount,
+//       MAX(bk.id) AS bookingId,
+
+//       mu.id AS bookedUserId,
+//       mu.fullName AS bookedMemberName,
+//       mu.email AS bookedMemberEmail,
+//       mu.phone AS bookedMemberPhone
+
+//     FROM classschedule cs
+
+//     -- trainer (admin filter)
+//     LEFT JOIN user u 
+//       ON cs.trainerId = u.id
+
+//     -- booking ONLY if member is valid
+//     LEFT JOIN booking bk
+//       ON bk.scheduleId = cs.id
+//      AND bk.memberId = ?
+
+//     LEFT JOIN member m
+//       ON m.id = bk.memberId
+
+//     LEFT JOIN user mu
+//       ON mu.id = m.userId
+
+//     -- total bookings count
+//     LEFT JOIN booking bk2
+//       ON bk2.scheduleId = cs.id
+
+//     WHERE u.adminId = ?
+
+//     GROUP BY 
+//       cs.id,
+//       cs.className,
+//       cs.date,
+//       cs.day,
+//       cs.startTime,
+//       cs.endTime,
+//       cs.status,
+//       cs.capacity,
+//       cs.price,
+//       u.fullName,
+//       mu.id,
+//       mu.fullName,
+//       mu.email,
+//       mu.phone
+
+//     ORDER BY cs.id DESC
+//     `,
+//     [validMemberId, adminId]
+//   );
+
+//   /* ================================
+//      3️⃣ response
+//   ================================= */
+//   return rows.map((item) => ({
+//     id: item.id,
+//     className: item.className,
+//     date: item.date,
+//     day: item.day,
+//     time: `${item.startTime} - ${item.endTime}`,
+//     trainer: item.trainerName,
+//     status: item.status,
+//     capacity: item.capacity,
+//     membersCount: item.membersCount,
+//     price: item.price, // ✅ Added price
+
+//     isBooked: item.bookingId !== null,
+//     bookingId: item.bookingId,
+
+//     bookedMember: item.bookingId
+//       ? {
+//         id: item.bookedUserId,
+//         name: item.bookedMemberName,
+//         email: item.bookedMemberEmail,
+//         phone: item.bookedMemberPhone,
+//       }
+//       : null,
+//   }));
+// };
+
 export const getScheduledClassesWithBookingStatusService = async (
   memberId,
   adminId
 ) => {
   /* ================================
      1️⃣ check member (OPTIONAL)
-     ❌ do NOT block if not found
   ================================= */
   let validMemberId = null;
 
@@ -343,8 +505,50 @@ export const getScheduledClassesWithBookingStatusService = async (
   }
 
   /* ================================
+     1a️⃣ PLAN EXPIRY LOGIC (SESSION + DATE)
+  ================================= */
+  let planExpired = false;
+  let remainingSessions = Infinity;
+
+  if (validMemberId) {
+    const [planRows] = await pool.query(
+      `
+      SELECT 
+        mp.sessions AS totalSessions,
+        mpa.membershipTo,
+        (
+          SELECT COUNT(*)
+          FROM booking b
+          WHERE b.memberId = mpa.memberId
+        ) AS bookedSessions
+      FROM member_plan_assignment mpa
+      JOIN memberplan mp ON mp.id = mpa.planId
+      WHERE mpa.memberId = ?
+        AND mpa.status = 'ACTIVE'
+      ORDER BY mpa.id DESC
+      LIMIT 1
+      `,
+      [validMemberId]
+    );
+
+    if (planRows.length > 0) {
+      const { totalSessions, bookedSessions, membershipTo } = planRows[0];
+
+      remainingSessions = Math.max(0, totalSessions - bookedSessions);
+
+      const isSessionOver = totalSessions > 0 && bookedSessions >= totalSessions;
+      const isDateOver = membershipTo && new Date() > new Date(membershipTo);
+
+      planExpired = isSessionOver || isDateOver;
+    } else {
+      // no active plan
+      planExpired = true;
+      remainingSessions = 0;
+    }
+  }
+
+  /* ================================
      2️⃣ fetch schedules by admin
-     ❌ branch completely removed
   ================================= */
   const [rows] = await pool.query(
     `
@@ -357,6 +561,7 @@ export const getScheduledClassesWithBookingStatusService = async (
       cs.endTime,
       cs.status,
       cs.capacity,
+      cs.price,
 
       u.fullName AS trainerName,
 
@@ -369,25 +574,16 @@ export const getScheduledClassesWithBookingStatusService = async (
       mu.phone AS bookedMemberPhone
 
     FROM classschedule cs
+    LEFT JOIN user u ON cs.trainerId = u.id
 
-    -- trainer (admin filter)
-    LEFT JOIN user u 
-      ON cs.trainerId = u.id
-
-    -- booking ONLY if member is valid
     LEFT JOIN booking bk
       ON bk.scheduleId = cs.id
      AND bk.memberId = ?
 
-    LEFT JOIN member m
-      ON m.id = bk.memberId
+    LEFT JOIN member m ON m.id = bk.memberId
+    LEFT JOIN user mu ON mu.id = m.userId
 
-    LEFT JOIN user mu
-      ON mu.id = m.userId
-
-    -- total bookings count
-    LEFT JOIN booking bk2
-      ON bk2.scheduleId = cs.id
+    LEFT JOIN booking bk2 ON bk2.scheduleId = cs.id
 
     WHERE u.adminId = ?
 
@@ -400,6 +596,7 @@ export const getScheduledClassesWithBookingStatusService = async (
       cs.endTime,
       cs.status,
       cs.capacity,
+      cs.price,
       u.fullName,
       mu.id,
       mu.fullName,
@@ -414,30 +611,41 @@ export const getScheduledClassesWithBookingStatusService = async (
   /* ================================
      3️⃣ response
   ================================= */
-  return rows.map((item) => ({
-    id: item.id,
-    className: item.className,
-    date: item.date,
-    day: item.day,
-    time: `${item.startTime} - ${item.endTime}`,
-    trainer: item.trainerName,
-    status: item.status,
-    capacity: item.capacity,
-    membersCount: item.membersCount,
+  return rows.map((item) => {
+    const isBooked = item.bookingId !== null;
 
-    isBooked: item.bookingId !== null,
-    bookingId: item.bookingId,
+    return {
+      id: item.id,
+      className: item.className,
+      date: item.date,
+      day: item.day,
+      time: `${item.startTime} - ${item.endTime}`,
+      trainer: item.trainerName,
+      status: item.status,
+      capacity: item.capacity,
+      membersCount: item.membersCount,
+      price: item.price,
 
-    bookedMember: item.bookingId
-      ? {
+      isBooked,
+      bookingId: item.bookingId,
+
+      isBookable: !planExpired && !isBooked,
+      sessionExpired: planExpired, // ✅ YOUR FINAL RULE
+
+      bookedMember: isBooked
+        ? {
           id: item.bookedUserId,
           name: item.bookedMemberName,
           email: item.bookedMemberEmail,
           phone: item.bookedMemberPhone,
         }
-      : null,
-  }));
+        : null,
+    };
+  });
 };
+
+
+
 
 export const cancelBookingService = async (memberId, scheduleId) => {
   const [existingRows] = await pool.query(
@@ -494,6 +702,7 @@ export const getAllScheduledClassesService = async (adminId) => {
     day: item.day,
     status: item.status,
     membersCount: item.membersCount,
+    price: item.price, // ✅ Added price
   }));
 };
 
