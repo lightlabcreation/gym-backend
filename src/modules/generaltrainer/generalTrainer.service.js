@@ -303,12 +303,12 @@ export const getMemberBookingDetailsService = async (branchId, memberId) => {
     },
     plan: member.planName
       ? {
-          id: member.planId,
-          name: member.planName,
-          sessions: member.planSessions,
-          validityDays: member.planValidityDays,
-          price: member.planPrice,
-        }
+        id: member.planId,
+        name: member.planName,
+        sessions: member.planSessions,
+        validityDays: member.planValidityDays,
+        price: member.planPrice,
+      }
       : null,
     bookings: bookingDetails,
     payments: paymentResults.map((payment) => ({
@@ -389,42 +389,47 @@ export const getMemberBookingDetailsService = async (branchId, memberId) => {
 //   };
 // };
 
-export const getClassPerformanceReportService = async (adminId) => {
+export const getClassPerformanceReportService = async (adminId, trainerId) => {
   if (!adminId) {
     throw { status: 400, message: "Admin ID is required" };
   }
 
   try {
+    const isTrainer = trainerId && !isNaN(trainerId);
+
     /* ------------------------------------------------
-       1️⃣ TOTAL ACTIVE STUDENTS
+       1️⃣ TOTAL ACTIVE STUDENTS (Trainer Filtered)
     ------------------------------------------------ */
     const [totalStudentsResult] = await pool.query(
       `
       SELECT COUNT(*) AS count
-      FROM member
-      WHERE adminId = ?
-        AND status = 'ACTIVE'
+      FROM member m
+      JOIN memberplan mp ON m.planId = mp.id
+      WHERE m.adminId = ?
+        AND m.status = 'ACTIVE'
+        ${isTrainer ? "AND mp.trainerId = ?" : ""}
       `,
-      [adminId]
+      isTrainer ? [adminId, trainerId] : [adminId]
     );
 
     const totalStudents = totalStudentsResult[0].count;
 
     /* ------------------------------------------------
-       2️⃣ PRESENT STUDENTS TODAY (🔥 FIXED)
+       2️⃣ PRESENT STUDENTS TODAY (Trainer Filtered)
     ------------------------------------------------ */
     const [presentStudentsResult] = await pool.query(
       `
       SELECT COUNT(DISTINCT ma.memberId) AS count
       FROM memberattendance ma
       JOIN member m ON ma.memberId = m.userId
-
+      JOIN memberplan mp ON m.planId = mp.id
       WHERE 
         m.adminId = ?
         AND DATE(ma.checkIn) = CURDATE()
         AND m.status = 'ACTIVE'
+        ${isTrainer ? "AND mp.trainerId = ?" : ""}
       `,
-      [adminId]
+      isTrainer ? [adminId, trainerId] : [adminId]
     );
 
     const presentStudents = presentStudentsResult[0].count;
@@ -440,26 +445,6 @@ export const getClassPerformanceReportService = async (adminId) => {
     /* ------------------------------------------------
        4️⃣ CLASS PERFORMANCE (LAST 7 DAYS)
     ------------------------------------------------ */
-    // const [studentAttendanceByClass] = await pool.query(
-    //   `
-    //   SELECT
-    //     cs.className,
-    //     cs.date,
-    //     cs.capacity,
-    //     COUNT(DISTINCT b.memberId) AS bookedCount
-    //   FROM classschedule cs
-    //   JOIN branch br ON cs.branchId = br.id
-    //   LEFT JOIN booking b ON cs.id = b.scheduleId
-    //   WHERE
-    //     br.adminId = ?
-    //     AND DATE(cs.date) BETWEEN DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND CURDATE()
-    //   GROUP BY cs.id, cs.className, cs.date, cs.capacity
-    //   ORDER BY cs.date DESC
-    //   LIMIT 10
-    //   `,
-    //   [adminId]
-    // );
-
     const [studentAttendanceByClass] = await pool.query(
       `
   SELECT
@@ -486,6 +471,7 @@ export const getClassPerformanceReportService = async (adminId) => {
   WHERE
     cs.adminId = ?
     AND DATE(cs.date) BETWEEN DATE_SUB(CURDATE(), INTERVAL 7 DAY) AND CURDATE()
+    ${isTrainer ? "AND cs.trainerId = ?" : ""}
 
   GROUP BY
     cs.id,
@@ -499,7 +485,7 @@ export const getClassPerformanceReportService = async (adminId) => {
   ORDER BY cs.date DESC
   LIMIT 10
   `,
-      [adminId]
+      isTrainer ? [adminId, trainerId] : [adminId]
     );
     /* ------------------------------------------------
        5️⃣ FORMAT RESPONSE
@@ -1017,8 +1003,8 @@ export const getDashboardDataService = async ({ adminId, trainerId }) => {
     /* =========================
        5️⃣ WEEKLY ATTENDANCE TREND
     ========================= */
-const [weeklyAttendance] = await pool.query(
-  `
+    const [weeklyAttendance] = await pool.query(
+      `
   SELECT 
     DAYNAME(ma.checkIn) AS day,
     COUNT(*) AS count
@@ -1031,8 +1017,8 @@ const [weeklyAttendance] = await pool.query(
   GROUP BY DAYNAME(ma.checkIn)
   ORDER BY ma.checkIn
   `,
-  [trainerId]
-);
+      [trainerId]
+    );
 
 
     /* =========================

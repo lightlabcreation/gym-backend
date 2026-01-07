@@ -97,8 +97,9 @@ export const getMemberBookings = async (req, res) => {
 
 export const getClassPerformanceReport = async (req, res) => {
   try {
-    // ✅ adminId params ya query se lo
+    // ✅ adminId params ya query se lo, trainerId query se lo
     const adminId = parseInt(req.params.adminId || req.query.adminId);
+    const trainerId = parseInt(req.query.trainerId);
 
     if (!adminId || isNaN(adminId)) {
       return res.status(400).json({
@@ -107,8 +108,8 @@ export const getClassPerformanceReport = async (req, res) => {
       });
     }
 
-    // ✅ adminId service ko pass karo
-    const result = await getClassPerformanceReportService(adminId);
+    // ✅ adminId aur trainerId service ko pass karo
+    const result = await getClassPerformanceReportService(adminId, trainerId);
 
     res.status(200).json({
       success: true,
