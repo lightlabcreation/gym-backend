@@ -420,28 +420,21 @@ export const memberDetailService = async (id) => {
   // 🔒 Remove sensitive fields
   delete member.password;
 
-  let attended = 0;
+  // ✅ FIX: Count ALL attendance records for this member (not filtered by date)
+  const [[attendance]] = await pool.query(
+    `
+    SELECT COUNT(*) AS attended
+    FROM memberattendance
+    WHERE memberId = ?
+    `,
+    [id] // ✅ Use member.id, not member.userId
+  );
 
+  const attended = attendance.attended || 0;
   const total = member.totalSessions || 0;
-  if (member.membershipFrom && member.membershipTo) {
-    const [[attendance]] = await pool.query(
-      `
-      SELECT COUNT(*) AS attended
-      FROM memberattendance
-      WHERE memberId = ?
-        AND checkIn BETWEEN ? AND ?
-      `,
-      [
-        member.userId, // 🔑 matching rule
-        member.membershipFrom,
-        member.membershipTo,
-      ]
-    );
-
-    attended = attendance.attended || 0;
-  }
   const isCompleted = total > 0 && attended >= total;
   const remaining = isCompleted ? 0 : Math.max(total - attended, 0);
+
   member.plan = member.planName || "Unknown";
   member.trainerType = member.trainerType || "Not Assigned";
   member.sessionDetails = {
@@ -1257,11 +1250,25 @@ export const listPTBookingsService = async (branchId) => {
 
 export const getMembersByAdminAndPlan = async (adminId) => {
   try {
-    // Fetch members with the given adminId, plan type 'MEMBER' or 'GROUP'
+    // Fetch members with the given adminId, plan type 'MEMBER' or 'GROUP' using member_plan_assignment
     const query = `
-      SELECT m.id, m.fullName, m.email, m.phone, m.planId, m.membershipFrom, m.membershipTo, m.status, mp.type, mp.trainerType
+      SELECT DISTINCT 
+        m.id, 
+        m.fullName, 
+        m.email, 
+        m.phone, 
+        mpa.planId, 
+        mpa.membershipFrom, 
+        mpa.membershipTo, 
+        m.status, 
+        mp.type, 
+        mp.trainerType,
+        mp.name as planName,
+        mp.sessions as totalSessions,
+        (SELECT COUNT(*) FROM memberattendance ma WHERE ma.memberId = m.id) as sessionsUsed
       FROM member m
-      JOIN memberplan mp ON m.planId = mp.id
+      JOIN member_plan_assignment mpa ON m.id = mpa.memberId
+      JOIN memberplan mp ON mpa.planId = mp.id
       WHERE m.adminId = ? AND (mp.type = 'MEMBER' OR mp.type = 'GROUP')`;
 
     const [members] = await pool.query(query, [adminId]);
@@ -1307,7 +1314,7 @@ export const getMembersByAdminAndGroupPlanService = async (adminId, planId) => {
       throw error;
     }
     const plan = planResult[0];
-    // Query to get all members for a specific plan ID
+    // Query to get all members for a specific plan ID using the member_plan_assignment table
     const membersQuery = `
       SELECT 
         m.id,
@@ -1319,31 +1326,38 @@ export const getMembersByAdminAndGroupPlanService = async (adminId, planId) => {
         m.address,
         m.joinDate,
         m.branchId,
-        m.membershipFrom,
-        m.membershipTo,
-        m.paymentMode,
-        m.amountPaid,
+        mpa.membershipFrom,
+        mpa.membershipTo,
+        mpa.paymentMode,
+        mpa.amountPaid,
         m.dateOfBirth,
         m.status,
-        m.planId,
+        mpa.planId,
         mp.name as planName,
         mp.sessions,
         mp.validityDays,
         mp.price,
-        mp.type as planType
+        mp.type as planType,
+        (SELECT COUNT(*) FROM memberattendance ma WHERE ma.memberId = m.id) as sessionsUsed
       FROM 
         member m
       JOIN 
-        memberplan mp ON m.planId = mp.id
+        member_plan_assignment mpa ON m.id = mpa.memberId
+      JOIN 
+        memberplan mp ON mpa.planId = mp.id
       WHERE 
-        mp.id = ?         -- CHANGED: Filter by specific planId
+        mpa.planId = ?
         AND m.adminId = ?
       ORDER BY 
         m.fullName
     `;
 
-    // CHANGED: Pass both planId and adminId to the query
+    console.log(`[DEBUG] Fetching members for planId=${planId}, adminId=${adminId}`);
     const [members] = await pool.query(membersQuery, [planId, adminId]);
+    console.log(`[DEBUG] Found ${members.length} members`);
+    if (members.length > 0) {
+      console.log(`[DEBUG] Sample member:`, members[0]);
+    }
 
     // Calculate statistics (this logic remains the same)
     const currentDate = new Date();
@@ -1416,6 +1430,12 @@ export const getMembersByAdminAndGeneralMemberPlanService = async (
     /* =========================
        FETCH MEMBERS
     ========================= */
+    /* =========================
+       FETCH MEMBERS
+    ========================= */
+    /* =========================
+       FETCH MEMBERS
+    ========================= */
     const membersQuery = `
       SELECT 
         m.id,
@@ -1427,30 +1447,37 @@ export const getMembersByAdminAndGeneralMemberPlanService = async (
         m.address,
         m.joinDate,
         m.branchId,
-        m.membershipFrom,
-        m.membershipTo,
-        m.paymentMode,
-        m.amountPaid,
+        mpa.membershipFrom,
+        mpa.membershipTo,
+        mpa.paymentMode,
+        mpa.amountPaid,
         m.dateOfBirth,
         m.status,
-        m.planId,
+        mpa.planId,
         mp.name AS planName,
         mp.sessions,
         mp.validityDays,
         mp.price,
         mp.type AS planType,
-        mp.trainerType
+        mp.trainerType,
+        (SELECT COUNT(*) FROM memberattendance ma WHERE ma.memberId = m.id) as sessionsUsed
       FROM member m
-      JOIN memberplan mp ON m.planId = mp.id
+      JOIN member_plan_assignment mpa ON m.id = mpa.memberId
+      JOIN memberplan mp ON mpa.planId = mp.id
       WHERE 
         m.adminId = ?
-        AND mp.id = ?
+        AND mpa.planId = ?
         AND mp.type = 'MEMBER'
         AND mp.trainerType = 'general'
       ORDER BY m.fullName
     `;
 
+    console.log(`[DEBUG GENERAL] Fetching members for planId=${planId}, adminId=${adminId}`);
     const [members] = await pool.query(membersQuery, [adminId, planId]);
+    console.log(`[DEBUG GENERAL] Found ${members.length} members`);
+    if (members.length > 0) {
+      console.log(`[DEBUG GENERAL] Sample member:`, members[0]);
+    }
 
     /* =========================
        STATISTICS
